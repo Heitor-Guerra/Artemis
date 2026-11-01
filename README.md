@@ -98,8 +98,7 @@ The first milestone should focus on the core project lifecycle:
 4. Add and resolve dependencies.
 5. Synchronize the project-local runtime and dependencies.
 6. Write and read a lockfile for repeatable installs.
-
-Running project scripts (for example, `artms run`) is a possible later feature and is intentionally outside the initial scope. Other future ideas include dependency removal and upgrade commands, dependency-tree inspection, cache management, and support for additional Lua distributions or package sources.
+7. Run the project through its entrypoint.
 
 ---
 
@@ -122,4 +121,4 @@ These projects are acknowledged as conceptual and workflow inspirations. This pr
 
 ## License
 
-This project is released under the MIT License. See [LICENSE](LICENSE).
+This project is released under the GNU General Public License v3.0 License. See [LICENSE](LICENSE).
