@@ -1,0 +1,16 @@
+# Example only: the manifest filename and schema are still provisional.
+
+[project]
+name = "artemis"
+description = "A feature-rich lua project manager"
+lua = "5.5"
+maintainer = "Heitor Guerra Proveti <heitor.guerra@proton.me>"
+
+[dependencies]
+argparse = "0.7.2-1"
+
+[run]
+args = [ "src/main.lua" ]
+
+[build]
+type = "builtin"
