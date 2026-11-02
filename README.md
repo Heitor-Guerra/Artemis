@@ -20,8 +20,6 @@ The workflow takes inspiration from modern language tooling while remaining focu
 
 ## Proposed workflow
 
-The command names are provisional. They are intended to communicate the planned user experience.
-
 ### Initialize a project
 
 ```sh
