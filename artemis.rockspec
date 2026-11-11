@@ -14,6 +14,7 @@ description = {
 dependencies = {
   "lua >= 5.4",
   "argparse >= 0.7"
+  "tinytoml >= 1.0"
 }
 
 build = {
