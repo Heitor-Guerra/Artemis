@@ -16,7 +16,7 @@ local toml = require("tinytoml")
 --- @field main?         string                Optional path to the project's entry-point file.
 --- @field authors?      string[]              Project authors.
 --- @field maintainers?  string[]              Project maintainers.
---- @field dependencies? table<string, string> Runtime dependencies mapped to version constraints.
+--- @field dependencies  table<string, string> Runtime dependencies mapped to version constraints.
 
 --- @class Artemis.Manifest
 --- @field data  Artemis.ManifestData Parsed and validated manifest data.
@@ -268,7 +268,7 @@ function Manifest:get_dependency(package_name)
 end
 
 --- Return a copy of all runtime dependencies.
---- @return table<string, string>?
+--- @return table<string, string>
 function Manifest:get_dependencies()
     return deep_copy(self.data.dependencies)
 end
