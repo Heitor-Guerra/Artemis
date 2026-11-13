@@ -13,7 +13,7 @@
 local toml = require("tinytoml")
 
 --- @class Artemis.LockfileProject
---- @field name      string  Project name from lua-project.toml.
+--- @field name      string  Project name from artemis-project.toml.
 --- @field lua       string  Lua version requirement from the manifest (for example, "5.4").
 --- @field runtime?  string  Exact installed Lua release (for example, "5.4.9").
 --- @field version?  string  Optional project version from the manifest.
@@ -43,9 +43,9 @@ Lockfile.__index = Lockfile
 --- @type integer
 Lockfile.FORMAT_VERSION = 1
 
---- Default lockfile filename, alongside lua-project.toml.
+--- Default lockfile filename, alongside artemis-project.toml.
 --- @type string
-Lockfile.DEFAULT_FILENAME = "lua-project.lock"
+Lockfile.DEFAULT_FILENAME = "artemis-project.lock"
 
 
 ------------------------------------ Local Functions ------------------------------------
@@ -454,7 +454,7 @@ end
 --- @param installed_rocks  Artemis.InstalledRock[]
 --- @param options?         { runtime_version?: string, path?: string, metadata?: table }
 --- @return Artemis.Lockfile?  lockfile
---- @return string?  error_message
+--- @return string?            error_message
 function Lockfile.from_installed(manifest, installed_rocks, options)
     options = options or {}
     if type(options) ~= "table" then

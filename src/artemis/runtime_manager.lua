@@ -31,7 +31,7 @@
 --- @field cache_dir             string            Shared Artemis cache directory.
 --- @field downloads_dir         string            Directory containing downloaded Lua source archives.
 --- @field runtimes_dir          string            Directory containing compiled Lua installations.
---- @field project_runtime_file  string            Project-local Runtime executable
+--- @field project_runtime_file  string            Path to the project-local file recording the selected Lua release.
 --- @field build_dir             string            Temporary source/build directory.
 --- @field metadata_dir          string            Project-local Artemis metadata directory.
 --- @field curl                  string            curl executable.
@@ -219,9 +219,9 @@ end
 --- @return string?  cache_dir
 --- @return string?  error_message
 local function resolve_cache_dir(project_root, requested_cache_dir)
-    local candidate = requested_cache_dir or os.getenv("ARTEMIS_CACHE_DIR") or "~/.cache/artemis"
+    local candidate = requested_cache_dir or os.getenv("ARTEMIS_CACHE_DIR")
 
-    if not candidate or candidate == "" then
+    if candidate == nil or candidate == "" then
         local xdg_cache_home = os.getenv("XDG_CACHE_HOME")
         local home = os.getenv("HOME")
 

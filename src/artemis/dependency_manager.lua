@@ -35,7 +35,6 @@
 --- @field cache_dir        string            Shared Artemis cache directory.
 --- @field rocks_cache_dir  string            LuaRocks download cache directory.
 --- @field luarocks_config  string            Generated LuaRocks config that points to the shared cache.
-
 local DependencyManager = {}
 DependencyManager.__index = DependencyManager
 
@@ -102,8 +101,8 @@ local function read_file_contents(path)
 end
 
 --- Write complete file contents and check both write and close results.
---- @param  path      string
---- @param  contents  string
+--- @param path      string
+--- @param contents  string
 --- @return boolean  success
 --- @return string?  error_message
 local function write_file_contents(path, contents)
@@ -141,9 +140,9 @@ end
 --- @return string?  cache_dir
 --- @return string?  error_message
 local function resolve_cache_dir(root, requested)
-    local candidate = requested or os.getenv("ARTEMIS_CACHE_DIR") or "~/.cache/artemis"
+    local candidate = requested or os.getenv("ARTEMIS_CACHE_DIR")
 
-    if not candidate or candidate == "" then
+    if candidate == nil or candidate == "" then
         local xdg_cache_home = os.getenv("XDG_CACHE_HOME")
         local home = os.getenv("HOME")
 
@@ -187,7 +186,7 @@ end
 --- @param root              string  Project root.
 --- @param lua_version       string  LuaRocks version identifier, such as "5.4".
 --- @param explicit_config?  string  Explicit config path.
---- @return string[] paths
+--- @return string[]  paths
 local function find_luarocks_configs(root, lua_version, explicit_config)
     local candidates = {}
     local specific_env = os.getenv("LUAROCKS_CONFIG_" .. lua_version:gsub("%.", "_"))
@@ -455,9 +454,9 @@ end
 
 --- Convert Artemis lock entries to LuaRocks' native lockfile format.
 --- LuaRocks expects a Lua chunk returning { dependencies = { name = version } }.
---- @param locked_dependencies table<string, table|string>
---- @return string? contents
---- @return string? error_message
+--- @param locked_dependencies  table<string, table|string>
+--- @return string?  contents
+--- @return string?  error_message
 local function serialize_luarocks_lock(locked_dependencies)
     if type(locked_dependencies) ~= "table" then
         return nil, "Locked dependencies must be a table."
@@ -500,8 +499,8 @@ end
 
 --- Run a callback while LuaRocks' native lockfile is staged at the project root.
 --- Any pre-existing user lockfile is restored, including when installation fails.
---- @param self Artemis.DependencyManager
---- @param contents  string  Serialized LuaRocks lockfile.
+--- @param self      Artemis.DependencyManager
+--- @param contents  string                     Serialized LuaRocks lockfile.
 --- @param callback  fun(): boolean, string?
 --- @return boolean  success
 --- @return string?  error_message
@@ -593,12 +592,12 @@ function DependencyManager:_write_dependency_rockspec()
         string.format("version = %q", ROCKSPEC_VERSION),
         "source = {",
         -- LuaRocks requires source.url in a rockspec. `--only-deps` skips
-        --fetching/building the project itself, so this reserved URL is never fetched.
+        -- fetching/building the project itself, so this reserved URL is never fetched.
         '    url = "https://example.invalid/artemis-dependency-spec",',
         "}",
         "description = {",
         '    summary = "Generated dependency specification for an Artemis project",',
-        '    license = "MIT",',
+        '    license = "GPL-3.0-only",',
         "}",
         "dependencies = {"
     }
@@ -677,7 +676,7 @@ function DependencyManager.new(project_root, manifest, options)
     end
 
 
-    local manifest_path = options.manifest_path or manifest.path or "lua-project.toml"
+    local manifest_path = options.manifest_path or manifest.path or "artemis-project.toml"
     if type(manifest_path) ~= "string" or not manifest_path:match("%S") then
         return nil, "Manifest path must be a non-empty string."
     end
@@ -751,7 +750,7 @@ function DependencyManager.new(project_root, manifest, options)
         options.luarocks_config,
         options.lua_dir
     )
-    if not luarocks_config then
+    if not luarocks_config or not rocks_cache_dir then
         return nil, config_error
     end
 
@@ -772,7 +771,8 @@ function DependencyManager.new(project_root, manifest, options)
 end
 
 --- Install direct and transitive dependencies declared in the manifest.
---- When `locked_dependencies` is supplied, its exact versions are staged as a
+--- When `locked_dependencies` is supplied, its exact versions are staged
+--- in a temporary LuaRocks-native lockfile for reproducible installation.
 --- @param locked_dependencies?  table<string, Artemis.LockedDependency>  Exact versions from Artemis.Lockfile.
 --- @return boolean  success
 --- @return string?  error_message

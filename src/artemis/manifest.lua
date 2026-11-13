@@ -9,18 +9,18 @@
 local toml = require("tinytoml")
 
 --- @class Artemis.ManifestData
---- @field name          string                Project name.
---- @field lua           string                Lua version required by the project (for example, "5.4").
---- @field version?      string                Optional project version.
---- @field description?  string                Optional project description.
---- @field main?         string                Optional path to the project's entry-point file.
---- @field authors?      string[]              Project authors.
---- @field maintainers?  string[]              Project maintainers.
---- @field dependencies  table<string, string> Runtime dependencies mapped to version constraints.
+--- @field name          string                 Project name.
+--- @field lua           string                 Lua version required by the project (for example, "5.4").
+--- @field version?      string                 Optional project version.
+--- @field description?  string                 Optional project description.
+--- @field main?         string                 Optional path to the project's entry-point file.
+--- @field authors?      string[]               Project authors.
+--- @field maintainers?  string[]               Project maintainers.
+--- @field dependencies  table<string, string>  Runtime dependencies mapped to version constraints.
 
 --- @class Artemis.Manifest
---- @field data  Artemis.ManifestData Parsed and validated manifest data.
---- @field path  string               Path used when the manifest was loaded or last saved.
+--- @field data  Artemis.ManifestData  Parsed and validated manifest data.
+--- @field path  string                Path used when the manifest was loaded or last saved.
 local Manifest = {}
 Manifest.__index = Manifest
 
@@ -126,7 +126,7 @@ local function validate_dependencies(value)
 end
 
 --- Validate manifest data without creating a Manifest instance.
---- @param data any
+--- @param data  any
 --- @return boolean  valid
 --- @return string?  error_message
 local function validate_data(data)
@@ -196,8 +196,8 @@ end
 --- The manifest is validated immediately. Invalid data returns `nil` and an
 --- error message; valid data is copied so the caller retains ownership of its
 --- original table.
---- @param data  Artemis.ManifestData  Data to be saved
---- @param path? string                Path to associate with this manifest.
+--- @param data   Artemis.ManifestData  Data to be saved
+--- @param path?  string                Path to associate with this manifest.
 --- @return Artemis.Manifest?  manifest
 --- @return string?            error_message
 function Manifest.new(data, path)
