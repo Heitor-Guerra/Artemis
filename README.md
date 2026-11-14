@@ -104,6 +104,7 @@ This project is independently designed and implemented. However, its workflow is
 
 - **[uv](https://github.com/astral-sh/uv)** by **[Astral](https://astral.sh/)** — inspiration for a project-centric workflow, including project initialization, dependency addition, environment synchronization, and language-version management.
 - **[Lux](https://github.com/lumen-oss/lux)** by **[Lumen Labs / lumen-oss](https://github.com/lumen-oss)** — a Lua and Luau package manager that serves as a direct point of reference for Lua project and dependency management.
+- **[LuaRocks](https://luarocks.org/)** by **[LuaRocks Org](https://luarocks.org/)** - The *de facto* package manager for Lua modules.
 
 These projects are acknowledged as conceptual and workflow inspirations. This project is not affiliated with, sponsored by, or endorsed by Astral, Lumen Labs, or the maintainers of uv or Lux. No code from those projects is implied to be included here; any direct code reuse must be separately reviewed and credited in accordance with its original license.
 
