@@ -11,6 +11,8 @@
 ---
 --- @module 'artemis.runtime_manager'
 
+local lfs = require("lfs")
+
 --- @class Artemis.RuntimeManagerOptions
 --- @field cache_dir?         string  Shared Artemis cache directory. Defaults to $XDG_CACHE_HOME/artemis or ~/.cache/artemis.
 --- @field metadata_dir?      string  Project-local metadata directory. Defaults to ".artemis".
@@ -75,16 +77,16 @@ local function shell_quote(value)
 end
 
 --- Interpret os.execute/io.popen close results across Lua versions.
---- @param first   any
---- @param second  any
---- @param third   any
+--- @param success   true?
+--- @param exitcode  "exit"|"signal"?
+--- @param code      integer?
 --- @return boolean
-local function command_succeeded(first, second, third)
-    if first == true or first == 0 then
+local function command_succeeded(success, exitcode, code)
+    if success == true then
         return true
     end
 
-    return second == "exit" and third == 0
+    return exitcode == "exit" and code == 0
 end
 
 --- Run a command and return its combined standard output and standard error.
@@ -92,18 +94,19 @@ end
 --- @return string?  output
 --- @return string?  error_message
 local function capture_command(command)
+    --- Concatenate command to " 2>&1" to redirect stderr to stdout
     local handle, open_error = io.popen(command .. " 2>&1", "r")
     if not handle then
         return nil, string.format("Could not execute command: %s", tostring(open_error))
     end
 
-    local output = handle:read("*a") or ""
-    local first, second, third = handle:close()
+    local output = handle:read("a") or ""
+    local success, exitcode, code = handle:close()
 
-    if not command_succeeded(first, second, third) then
+    if not command_succeeded(success, exitcode, code) then
         return nil, string.format(
             "Command failed (status: %s):\n%s",
-            tostring(third or second or first),
+            tostring(code or exitcode or success),
             output
         )
     end
@@ -116,12 +119,12 @@ end
 --- @return boolean  success
 --- @return string?  error_message
 local function execute_command(command)
-    local first, second, third = os.execute(command)
-    if command_succeeded(first, second, third) then
+    local success, exitcode, code = os.execute(command)
+    if command_succeeded(success, exitcode, code) then
         return true
     end
 
-    return false, string.format("Command failed (status: %s): %s", tostring(third or second or first), command)
+    return false, string.format("Command failed (status: %s): %s", tostring(code or exitcode or success), command)
 end
 
 --- Read a small text file.
@@ -133,7 +136,7 @@ local function read_file(path)
         return nil
     end
 
-    local contents = file:read("*a")
+    local contents = file:read("a")
     file:close()
     return contents
 end
@@ -163,9 +166,9 @@ local function write_file(path, contents)
         return false, string.format("Could not write '%s': %s", path, tostring(write_error))
     end
 
-    local close_ok, close_error = file:close()
+    local close_ok, close_code = file:close()
     if not close_ok then
-        return false, string.format("Could not close '%s': %s", path, tostring(close_error))
+        return false, string.format("Could not close '%s': %s", path, tostring(close_code))
     end
 
     return true
@@ -175,29 +178,34 @@ end
 --- @param path  string
 --- @return boolean
 local function file_exists(path)
-    local file = io.open(path, "rb")
-    if not file then
-        return false
-    end
-
-    file:close()
-    return true
+    local mode = lfs.attributes(path, "mode")
+    return mode == "file"
 end
 
 --- Check whether a directory exists.
 --- @param path  string
 --- @return boolean
 local function directory_exists(path)
-    local ok = os.execute("test -d " .. shell_quote(path) .. " >/dev/null 2>&1")
-    return ok == true or ok == 0
+    local mode = lfs.attributes(path, "mode")
+    return mode == "directory"
 end
 
 --- Check whether an executable file exists.
 --- @param path  string
 --- @return boolean
 local function executable_exists(path)
-    local ok = os.execute("test -x " .. shell_quote(path) .. " >/dev/null 2>&1")
-    return ok == true or ok == 0
+    local attr = lfs.attributes(path)
+    if not attr or attr.mode ~= "file" then
+        return false
+    end
+
+    -- Check the permissions string for an 'x' (e.g., rwxr-xr-x)
+    local perms = attr.permissions
+    if perms and perms:match("x") then
+        return true
+    end
+
+    return false
 end
 
 --- Resolve a directory to an absolute path.
@@ -342,6 +350,7 @@ local function find_release_checksum(html, version)
             if position > filename_start then
                 break
             end
+            ---@diagnostic disable-next-line: cast-local-type
             row_start = position
         end
 
@@ -359,6 +368,7 @@ local function find_release_checksum(html, version)
             row_end = math.min(#html, filename_end + 2048)
         end
 
+        ---@diagnostic disable-next-line: param-type-mismatch
         local row = html:sub(row_start, row_end)
         local checksum = checksum_from_row(row)
         if checksum then
@@ -494,7 +504,7 @@ function RuntimeManager:_resolve_latest_series(series)
     if not latest_version then
         return nil, nil, string.format(
             "No released Lua versions matching series %s were found at %s. "
-                .. "The download index was retrieved, but no matching release filename was recognized.",
+            .. "The download index was retrieved, but no matching release filename was recognized.",
             series,
             self.source_index_url
         )

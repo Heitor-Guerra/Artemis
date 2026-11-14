@@ -67,7 +67,7 @@ local function make_project(overrides)
         end
         return overrides.rocks or {
             { name = "luasystem", version = "0.7.1-1" },
-            { name = "argparse", version = "0.7.2-1" }
+            { name = "argparse",  version = "0.7.2-1" }
         }
     end
 
@@ -152,7 +152,7 @@ describe("artemis.cli parser", function()
 
         assert.is_true(parsed_ok)
         assert.equals("add", arguments.command)
-        assert.equals("argparse", arguments.package)
+        assert.equals("argparse", arguments.pkg)
         assert.equals(">= 0.7, < 1.0", arguments.constraint)
     end)
 
@@ -244,7 +244,7 @@ describe("artemis.cli command dispatch", function()
         local services, output = make_services(project)
         local exit_code = CLI.execute({
             command = "add",
-            package = "argparse",
+            pkg = "argparse",
             constraint = ">= 0.7"
         }, services)
 
@@ -257,7 +257,7 @@ describe("artemis.cli command dispatch", function()
     it("reports an add failure without attempting a lockfile refresh", function()
         local project = make_project({ add_result = false, add_error = "resolution failed" })
         local services, _, errors = make_services(project)
-        local exit_code = CLI.execute({ command = "add", package = "missing-rock" }, services)
+        local exit_code = CLI.execute({ command = "add", pkg = "missing-rock" }, services)
 
         assert.equals(1, exit_code)
         assert.equals(0, project.sync_calls)
@@ -267,7 +267,7 @@ describe("artemis.cli command dispatch", function()
     it("removes a dependency and refreshes the lockfile", function()
         local project = make_project()
         local services, output = make_services(project)
-        local exit_code = CLI.execute({ command = "remove", package = "argparse" }, services)
+        local exit_code = CLI.execute({ command = "remove", pkg = "argparse" }, services)
 
         assert.equals(0, exit_code)
         assert.same({ "argparse" }, project.remove_calls)
@@ -278,7 +278,7 @@ describe("artemis.cli command dispatch", function()
     it("prints a warning when LuaRocks retains a removed transitive rock", function()
         local project = make_project({ remove_warning = "rock is still required by another package" })
         local services, output, errors = make_services(project)
-        local exit_code = CLI.execute({ command = "remove", package = "argparse" }, services)
+        local exit_code = CLI.execute({ command = "remove", pkg = "argparse" }, services)
 
         assert.equals(0, exit_code)
         assert.matches("warning: rock is still required", errors[1])
@@ -408,7 +408,7 @@ describe("artemis.cli failure handling", function()
     it("reports a lockfile refresh failure after adding a dependency", function()
         local project = make_project({ sync_result = false, sync_error = "lockfile write failed" })
         local services, _, errors = make_services(project)
-        local exit_code = CLI.execute({ command = "add", package = "argparse" }, services)
+        local exit_code = CLI.execute({ command = "add", pkg = "argparse" }, services)
 
         assert.equals(1, exit_code)
         assert.matches("was added, but the lockfile could not be refreshed", errors[1])
@@ -418,7 +418,7 @@ describe("artemis.cli failure handling", function()
     it("does not refresh the lockfile when removing an undeclared dependency fails", function()
         local project = make_project({ remove_result = false, remove_warning = "Dependency is not declared." })
         local services, _, errors = make_services(project)
-        local exit_code = CLI.execute({ command = "remove", package = "unknown" }, services)
+        local exit_code = CLI.execute({ command = "remove", pkg = "unknown" }, services)
 
         assert.equals(1, exit_code)
         assert.equals(0, project.sync_calls)

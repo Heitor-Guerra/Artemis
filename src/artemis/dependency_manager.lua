@@ -354,14 +354,33 @@ local function execute_luarocks(self, arguments)
     end
 
     local command = table.concat(command_parts, " ")
-    local first, second, third = os.execute(command)
+
+    -- Capture both stdout and stderr instead of printing directly.
+    local handle, open_error = io.popen(command .. " 2>&1", "r")
+
+    if not handle then
+        return false, string.format(
+            "Could not start LuaRocks: %s",
+            tostring(open_error)
+        )
+    end
+
+    local output = handle:read("*a") or ""
+    local first, second, third = handle:close()
 
     if command_succeeded(first, second, third) then
+        -- Successful LuaRocks output is intentionally suppressed.
         return true
     end
 
     local status = third or second or first
-    return false, string.format("LuaRocks command failed (status: %s): %s", tostring(status), command)
+    output = output:gsub("%s+$", "")
+
+    return false, string.format(
+        "LuaRocks command failed (status: %s):\n%s",
+        tostring(status),
+        output ~= "" and output or command
+    )
 end
 
 --- Execute a LuaRocks command and capture its combined output.

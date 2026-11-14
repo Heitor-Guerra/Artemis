@@ -579,11 +579,11 @@ function CLI.build_parser()
     parser:command("sync", "Synchronize the runtime and dependencies with the lockfile.")
 
     local add = parser:command("add", "Add a dependency and update the lockfile.")
-    add:argument("package", "LuaRocks package name.")
+    add:argument("package", "LuaRocks package name."):target("pkg")
     add:argument("constraint", "Optional LuaRocks version constraint."):args("?")
 
     local remove = parser:command("remove", "Remove a direct dependency and update the lockfile.")
-    remove:argument("package", "LuaRocks package name.")
+    remove:argument("package", "LuaRocks package name."):target("pkg")
 
     parser:command("list ls", "List rocks installed in the project tree.")
     parser:command("tree", "Show installed rocks grouped as direct or transitive dependencies.")

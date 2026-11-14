@@ -16,7 +16,8 @@ description = {
 dependencies = {
   "lua >= 5.4",
   "tinytoml >= 1.0",
-  "argparse >= 0.7.2, < 1.0"
+  "argparse >= 0.7.2, < 1.0",
+  "luafilesystem >= 1.9.0"
 }
 
 test_dependencies = {

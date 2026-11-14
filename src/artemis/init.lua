@@ -1,5 +1,5 @@
 local Project = require("artemis.project")
 
 return {
-  Project = Project,
+    Project = Project,
 }
