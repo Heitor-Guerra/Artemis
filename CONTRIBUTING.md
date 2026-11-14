@@ -45,13 +45,9 @@ Lua is dynamically typed, so explicit documentation is important. Keep annotatio
 ### Example
 
 ```lua
----@alias DependencyMap table<string, string>
-
----@class Project
----@field name string
----@field lua_version string
----@field main string
----@field dependencies DependencyMap
+--- @class Artemis.Manifest
+--- @field data  Artemis.ManifestData  Parsed and validated manifest data.
+--- @field path  string                Path used when the manifest was loaded or last saved.
 
 ---@param project_root string Directory containing the project manifest.
 ---@return Project? project Parsed project, or nil if loading failed.
@@ -61,7 +57,7 @@ local function load_project(project_root)
 end
 
 ---@type string
-local manifest_filename = "lua-project.toml"
+local manifest_filename = "artemis-project.toml"
 ```
 
 The example uses LuaCATS annotations recognized by LuaLS. Follow the syntax supported by the version of LuaLS pinned or documented by this repository.

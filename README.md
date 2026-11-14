@@ -8,7 +8,7 @@ The workflow takes inspiration from modern language tooling while remaining focu
 
 ## Goals
 
-- **Project metadata:** keep a project's name, description, maintainer, Lua version, and entry point in one manifest.
+- **Project metadata:** keep a project's name, description, Lua version, and entry point in one manifest.
 - **Lua version management:** select and install the Lua version requested by a project without requiring users to manage it globally themselves.
 - **Dependency management:** declare, add, and resolve project dependencies.
 - **Environment synchronization:** install the selected Lua runtime and declared dependencies into a project-local working directory.
@@ -24,10 +24,10 @@ The workflow takes inspiration from modern language tooling while remaining focu
 artemis init
 ```
 
-Creates a project manifest and a starter source file in the current directory. An optional project name could be accepted:
+Creates a project manifest and a starter source file in the current directory. An optional project name, and lua version, could be accepted:
 
 ```sh
-artemis init my-project
+artemis init my-project --lua-version 5.4.9
 ```
 
 ### Add a dependency
@@ -72,8 +72,8 @@ my-project/
 ├── artemis-project.toml           # Project metadata and dependency declarations
 ├── artemis-project.lock           # Resolved dependency versions
 ├── src/
-│   └── main.lua           # Main file selected by the project
-└── .artemis/              # Project-local Lua runtime and installed packages
+│   └── main.lua                   # Main file selected by the project
+└── .artemis/                      # Project-local information
 ```
 
 ---
@@ -94,7 +94,7 @@ The first milestone should focus on the core project lifecycle:
 
 ## Development
 
-Contributions are welcome. Before opening a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md) and follow the project's Lua documentation and typing conventions. In particular, use [LuaLS](https://luals.github.io/) and add LuaCATS annotations for public APIs and values whose types are not obvious.
+Contributions are welcome. Before opening a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md) and follow the project's Lua documentation and typing conventions. In particular, use [LuaLS](https://luals.github.io/) and add LuaCATS annotations for public APIs and values whose types are not obvious. It is also recommended to use Nix to create a development shell, although not necessary.
 
 ---
 
@@ -106,7 +106,7 @@ This project is independently designed and implemented. However, its workflow is
 - **[Lux](https://github.com/lumen-oss/lux)** by **[Lumen Labs / lumen-oss](https://github.com/lumen-oss)** — a Lua and Luau package manager that serves as a direct point of reference for Lua project and dependency management.
 - **[LuaRocks](https://luarocks.org/)** by **[LuaRocks Org](https://luarocks.org/)** - The *de facto* package manager for Lua modules.
 
-These projects are acknowledged as conceptual and workflow inspirations. This project is not affiliated with, sponsored by, or endorsed by Astral, Lumen Labs, or the maintainers of uv or Lux. No code from those projects is implied to be included here; any direct code reuse must be separately reviewed and credited in accordance with its original license.
+These projects are acknowledged as conceptual and workflow inspirations. This project is not affiliated with, sponsored by, or endorsed by Astral, Lumen Labs, LuaRocks Org, or the maintainers of uv, Lux or LuaRocks. No code from those projects is implied to be included here; any direct code reuse must be separately reviewed and credited in accordance with its original license.
 
 ---
 

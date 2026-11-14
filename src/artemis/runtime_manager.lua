@@ -19,8 +19,8 @@ local lfs = require("lfs")
 --- @field curl?              string  curl executable. Defaults to "curl".
 --- @field tar?               string  tar executable. Defaults to "tar".
 --- @field make?              string  make executable. Defaults to "make".
---- @field sha256sum?         string  SHA-256 executable. Defaults to "sha256sum", with "shasum" as a fallback.
---- @field source_index_url?  string  Official Lua source index URL.
+--- @field sha256sum?         string  SHA-256 executable. Defaults to "sha256sum".
+--- @field source_url?        string  Official Lua source index URL.
 
 --- @class Artemis.LuaRelease
 --- @field version      string  Exact Lua release version, such as "5.4.9".
@@ -40,12 +40,12 @@ local lfs = require("lfs")
 --- @field tar                   string            tar executable.
 --- @field make                  string            make executable.
 --- @field sha256sum?            string            SHA-256 executable, when available.
---- @field source_index_url      string            Official Lua source index URL.
+--- @field source_url            string            Official Lua source index URL.
 local RuntimeManager = {}
 RuntimeManager.__index = RuntimeManager
 
 --- @type string
-RuntimeManager.DEFAULT_SOURCE_INDEX_URL = "https://www.lua.org/ftp/index.html"
+RuntimeManager.DEFAULT_SOURCE_URL = "https://www.lua.org/ftp/"
 
 ------------------------------------ Local Functions ------------------------------------
 
@@ -393,7 +393,7 @@ end
 function RuntimeManager:_fetch_release_index()
     return capture_command(
         shell_quote(self.curl) .. " --fail --silent --show-error --location --retry 2 "
-        .. shell_quote(self.source_index_url)
+        .. shell_quote(self.source_url .. "index.html")
     )
 end
 
@@ -506,7 +506,7 @@ function RuntimeManager:_resolve_latest_series(series)
             "No released Lua versions matching series %s were found at %s. "
             .. "The download index was retrieved, but no matching release filename was recognized.",
             series,
-            self.source_index_url
+            self.source_url
         )
     end
 
@@ -514,7 +514,7 @@ function RuntimeManager:_resolve_latest_series(series)
         return nil, nil, string.format(
             "Lua %s appears in the official download index, but Artemis could not parse its SHA-256 checksum from %s.",
             latest_version,
-            self.source_index_url
+            self.source_url
         )
     end
 
@@ -551,12 +551,7 @@ end
 --- @return string?  actual_checksum
 --- @return string?  error_message
 function RuntimeManager:_sha256(archive_path)
-    local command
-    if self.sha256sum == "shasum" then
-        command = "shasum -a 256 " .. shell_quote(archive_path)
-    else
-        command = shell_quote(self.sha256sum) .. " " .. shell_quote(archive_path)
-    end
+    local command = shell_quote(self.sha256sum) .. " " .. shell_quote(archive_path)
 
     local output, command_error = capture_command(command)
     if not output then
@@ -604,7 +599,7 @@ function RuntimeManager:_ensure_archive(version, expected_checksum)
         shell_quote(self.curl),
         "--fail --silent --show-error --location --retry 2",
         "--output", shell_quote(temporary_path),
-        shell_quote("https://www.lua.org/ftp/" .. archive_name)
+        shell_quote(self.source_url .. archive_name)
     }, " ")
 
     local downloaded, download_error = execute_command(download_command)
@@ -684,8 +679,7 @@ function RuntimeManager:_build_and_install(version, archive_path)
 
     local built, build_error = execute_command(
         "cd " .. shell_quote(source_directory) .. " && "
-        .. shell_quote(self.make) .. " all && "
-        .. shell_quote(self.make) .. " test"
+        .. shell_quote(self.make) .. " all test"
     )
     if not built then
         return false, string.format("Could not build or test Lua %s: %s", version, tostring(build_error))
@@ -794,35 +788,16 @@ function RuntimeManager.new(project_root, manifest, options)
     local curl = options.curl or "curl"
     local tar = options.tar or "tar"
     local make = options.make or "make"
-    local sha256sum = options.sha256sum
-    if sha256sum ~= nil and (type(sha256sum) ~= "string" or sha256sum == "") then
-        return nil, "options.sha256sum must be a non-empty executable name."
-    end
-
-    if sha256sum == nil then
-        local sha256sum_ok = os.execute("command -v sha256sum >/dev/null 2>&1")
-        if sha256sum_ok == true or sha256sum_ok == 0 then
-            sha256sum = "sha256sum"
-        else
-            local shasum_ok = os.execute("command -v shasum >/dev/null 2>&1")
-            if shasum_ok == true or shasum_ok == 0 then
-                sha256sum = "shasum"
-            end
-        end
-    end
+    local sha256sum = options.sha256sum or "sha256sum"
 
     if type(curl) ~= "string" or curl == "" or type(tar) ~= "string" or tar == ""
-        or type(make) ~= "string" or make == "" then
-        return nil, "curl, tar, and make executable names must be non-empty strings."
+        or type(make) ~= "string" or make == "" or type(sha256sum) ~= "string" or sha256sum == "" then
+        return nil, "curl, tar, make and sha256sum executable names must be non-empty strings."
     end
 
-    local source_index_url = options.source_index_url or RuntimeManager.DEFAULT_SOURCE_INDEX_URL
-    if type(source_index_url) ~= "string" or not source_index_url:match("^https://") then
-        return nil, "options.source_index_url must be an HTTPS URL."
-    end
-
-    if not sha256sum then
-        return nil, "A SHA-256 utility is required (install coreutils or provide options.sha256sum)."
+    local source_url = options.source_url or RuntimeManager.DEFAULT_SOURCE_URL
+    if type(source_url) ~= "string" or not source_url:match("^https://") then
+        return nil, "options.source_url must be an HTTPS URL."
     end
 
     local self = setmetatable({}, RuntimeManager)
@@ -838,7 +813,7 @@ function RuntimeManager.new(project_root, manifest, options)
     self.tar = tar
     self.make = make
     self.sha256sum = sha256sum
-    self.source_index_url = source_index_url
+    self.source_url = source_url
 
     return self
 end
