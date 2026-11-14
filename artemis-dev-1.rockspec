@@ -1,5 +1,7 @@
+rockspec_format = "3.0"
+
 package = "artemis"
-version = "0.1.0-1"
+version = "dev-1"
 
 source = {
   url = "git+https://github.com/Heitor-Guerra/artemis.git",
@@ -15,6 +17,15 @@ dependencies = {
   "lua >= 5.4",
   "tinytoml >= 1.0"
 }
+
+test_dependencies = {
+  "busted >= 2.2, < 3.0"
+}
+
+test = {
+  type = "busted"
+}
+
 
 build = {
   type = "builtin",

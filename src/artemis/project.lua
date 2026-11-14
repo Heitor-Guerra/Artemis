@@ -14,7 +14,7 @@ local Lockfile = require("artemis.lockfile")
 --- @class Artemis.ProjectOptions
 --- @field manifest_path?       string                            Path to the project manifest. Defaults to artemis-project.toml.
 --- @field manifest?            Artemis.Manifest                  Already-loaded manifest, useful for programmatic use and tests.
---- @field lockfile_path?       string                            Path to the lockfile. Defaults to lua-project.lock.
+--- @field lockfile_path?       string                            Path to the lockfile. Defaults to artemis-project.lock.
 --- @field cache_dir?           string                            Shared Artemis cache. Defaults to the runtime manager's cache directory.
 --- @field metadata_dir?        string                            Project-local Artemis metadata directory. Defaults to .artemis.
 --- @field tree?                string                            Project-local LuaRocks tree. Defaults to lua_modules.
@@ -418,7 +418,8 @@ function Project:sync()
         return false, dependency_error
     end
 
-    local installed_rocks
+    --- @type Artemis.InstalledRock[]?
+    local installed_rocks = {}
     if next(self.manifest:get_dependencies()) ~= nil then
         local list_error
         installed_rocks, list_error = self.dependency_manager:list_installed()
@@ -427,6 +428,9 @@ function Project:sync()
         end
     end
 
+    if not installed_rocks then
+        return false, "Installed Rocks could not be resolved."
+    end
     local generated_lockfile, lock_error = Lockfile.from_installed(
         self.manifest,
         installed_rocks,

@@ -232,6 +232,20 @@ local function resolve_cache_dir(project_root, requested_cache_dir)
         else
             candidate = join_path(project_root, ".cache/artemis")
         end
+    end
+
+    -- Expand an explicitly supplied home-relative path before resolving other
+    -- relative paths against the project root. Only the current user's home
+    -- directory is supported; named-user expansion is shell-specific.
+    if candidate == "~" or candidate:sub(1, 2) == "~/" then
+        local home = os.getenv("HOME")
+        if not home or not home:match("^/") then
+            return nil, "Cannot expand the cache path because HOME is not an absolute path."
+        end
+
+        candidate = candidate == "~" and home or join_path(home, candidate:sub(3))
+    elseif candidate:sub(1, 1) == "~" then
+        return nil, "Named-user home paths are not supported for the Artemis cache directory."
     elseif not is_absolute_path(candidate) then
         candidate = join_path(project_root, candidate)
     end

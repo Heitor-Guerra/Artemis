@@ -1,0 +1,13 @@
+return {
+  default = {
+    ROOT = { "spec" },
+    lpath = table.concat({
+      "./src/?.lua",
+      "./src/?/init.lua",
+      "./?.lua",
+      "./?/init.lua"
+    }, ";"),
+    verbose = true,
+    ["suppress-pending"] = true
+  }
+}

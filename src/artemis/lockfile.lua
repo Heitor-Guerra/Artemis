@@ -423,7 +423,7 @@ function Lockfile.new(data, path)
 end
 
 --- Load and validate a TOML lockfile.
---- @param path?  string  Path to the lockfile. Defaults to lua-project.lock.
+--- @param path?  string  Path to the lockfile. Defaults to artemis-project.lock.
 --- @return Artemis.Lockfile?  lockfile
 --- @return string?            error_message
 function Lockfile.load(path)

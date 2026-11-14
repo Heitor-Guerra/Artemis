@@ -153,8 +153,27 @@ local function resolve_cache_dir(root, requested)
         else
             candidate = join_path(root, ".cache/artemis")
         end
+    end
+
+    -- Expand an explicitly supplied home-relative path before resolving other
+    -- relative paths against the project root. Only the current user's home
+    -- directory is supported; named-user expansion is shell-specific.
+    if candidate == "~" or candidate:sub(1, 2) == "~/" then
+        local home = os.getenv("HOME")
+        if not home or not home:match("^/") then
+            return nil, "Cannot expand the cache path because HOME is not an absolute path."
+        end
+
+        candidate = candidate == "~" and home or join_path(home, candidate:sub(3))
+    elseif candidate:sub(1, 1) == "~" then
+        return nil, "Named-user home paths are not supported for the Artemis cache directory."
     elseif not is_absolute_path(candidate) then
         candidate = join_path(root, candidate)
+    end
+
+    candidate = candidate:gsub("/+$", "")
+    if candidate == "" then
+        candidate = "/artemis"
     end
 
     local parent = candidate:match("^(.*)/[^/]+$")
@@ -479,7 +498,7 @@ local function serialize_luarocks_lock(locked_dependencies)
     table.sort(names)
 
     local lines = {
-        "-- Generated temporarily by Artemis from lua-project.lock.",
+        "-- Generated temporarily by Artemis from artemis-project.lock.",
         "return {",
         "    dependencies = {"
     }
