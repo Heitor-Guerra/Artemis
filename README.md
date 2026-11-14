@@ -4,8 +4,6 @@ A project-first tool for making Lua development easier. The goal is to provide a
 
 The workflow takes inspiration from modern language tooling while remaining focused on Lua and its ecosystem.
 
-> **Project status:** This repository currently describes the proposed project and conventions.
-
 ---
 
 ## Goals

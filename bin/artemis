@@ -1,0 +1,38 @@
+#!/usr/bin/env lua
+
+-- Allow running directly from an Artemis source checkout without installing
+-- the package first. Installed LuaRocks scripts receive their rock paths from
+-- LuaRocks' generated wrapper; these paths are harmless additions there.
+local executable = arg and arg[0] or ""
+local script_directory = executable:match("^(.*)[/\\][^/\\]+$")
+local project_root = script_directory and script_directory:match("^(.*)[/\\]bin$") or nil
+
+local source_entry = project_root and io.open(project_root .. "/src/artemis/cli.lua", "rb") or nil
+if source_entry then
+    source_entry:close()
+
+    local development_paths = {
+        project_root .. "/src/?.lua",
+        project_root .. "/src/?/init.lua",
+        project_root .. "/lua_modules/share/lua/5.4/?.lua",
+        project_root .. "/lua_modules/share/lua/5.4/?/init.lua"
+    }
+    table.insert(development_paths, package.path)
+    package.path = table.concat(development_paths, ";")
+
+    local native_paths = {
+        project_root .. "/lua_modules/lib/lua/5.4/?.so",
+        project_root .. "/lua_modules/lib/lua/5.4/loadall.so"
+    }
+    table.insert(native_paths, package.cpath)
+    package.cpath = table.concat(native_paths, ";")
+end
+
+local ok, cli = pcall(require, "artemis.cli")
+if not ok then
+    io.stderr:write("Could not load Artemis CLI: ", tostring(cli), "\n")
+    io.stderr:write("Make sure Artemis and its LuaRocks dependencies are installed.\n")
+    os.exit(1)
+end
+
+os.exit(cli.main())

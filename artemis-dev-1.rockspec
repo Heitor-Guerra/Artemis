@@ -15,7 +15,8 @@ description = {
 
 dependencies = {
   "lua >= 5.4",
-  "tinytoml >= 1.0"
+  "tinytoml >= 1.0",
+  "argparse >= 0.7.2, < 1.0"
 }
 
 test_dependencies = {
@@ -36,6 +37,11 @@ build = {
     ["artemis.runtime_manager"] = "src/artemis/runtime_manager.lua",
     ["artemis.dependency_manager"] = "src/artemis/dependency_manager.lua",
     ["artemis.manifest"] = "src/artemis/manifest.lua",
-    ["artemis.lockfile"] = "src/artemis/lockfile.lua"
+    ["artemis.lockfile"] = "src/artemis/lockfile.lua",
+    ["artemis.cli"] = "src/artemis/cli.lua"
+  },
+
+  install = {
+    bin = { "bin/artemis" }
   }
 }
