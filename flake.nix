@@ -34,6 +34,24 @@
         shellHook = ''
           echo "Welcome to the Lua development shell!"
 
+          # LuaRocks stores project settings in .luarocks/config-5.4.lua.
+          # A project wrapper selects that configuration and the lua_modules
+          # tree. Bootstrap it for fresh clones and CI checkouts when absent.
+          if [ ! -x ./luarocks ]; then
+            echo "Initializing the project-local LuaRocks environment..."
+            if ! luarocks init --lua-version=5.4; then
+              echo "ERROR: Could not initialize the project-local LuaRocks environment." >&2
+              return 1
+            fi
+          fi
+
+          mkdir -p .luarocks
+
+          if [ ! -e "${glibcLibraryDirectory}/librt.so" ]; then
+            echo "ERROR: ${glibcLibraryDirectory}/librt.so was not found in the Nix glibc output."
+            return 1
+          fi
+
           # Configure the path in LuaRocks itself. Exporting RT_LIBDIR only
           # in the shell is insufficient because dependency detection reads
           # the LuaRocks configuration's variables table.
