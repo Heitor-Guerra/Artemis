@@ -93,7 +93,7 @@ end
 local function absolute_directory(path)
     local handle, open_error = io.popen("cd " .. shell_quote(path) .. " && pwd", "r")
     if not handle then
-        return nil, string.format("Could not resolve directory '%s': %s", path, tostring(open_error))
+        return nil, string.format("Could not resolve directory '%s': %s", path, open_error)
     end
 
     local absolute_path = (handle:read("*l") or ""):gsub("\r$", "")
@@ -149,18 +149,18 @@ local function write_new_file(path, contents)
 
     local file, open_error = io.open(path, "wb")
     if not file then
-        return false, string.format("Could not create '%s': %s", path, tostring(open_error))
+        return false, string.format("Could not create '%s': %s", path, open_error)
     end
 
     local write_ok, write_error = file:write(contents)
     if not write_ok then
         file:close()
-        return false, string.format("Could not write '%s': %s", path, tostring(write_error))
+        return false, string.format("Could not write '%s': %s", path, write_error)
     end
 
-    local close_ok, close_error = file:close()
+    local close_ok, close_reason = file:close()
     if not close_ok then
-        return false, string.format("Could not close '%s': %s", path, tostring(close_error))
+        return false, string.format("Could not close '%s': %s", path, close_reason)
     end
 
     return true
@@ -481,10 +481,7 @@ function CLI.execute(arguments, services)
     if command == "add" then
         local added, add_error = project:add_dependency(arguments.pkg, arguments.constraint)
         if not added then
-            local message = add_error or string.format(
-                "Could not add dependency '%s'.",
-                tostring(arguments.pkg)
-            )
+            local message = add_error or string.format("Could not add dependency '%s'.", arguments.pkg)
             return fail(services, message)
         end
 
@@ -492,11 +489,9 @@ function CLI.execute(arguments, services)
         -- Project:sync() refreshes Artemis' lockfile after that manifest change.
         local synchronized, sync_error = project:sync()
         if not synchronized then
-            return fail(services, string.format(
-                "Dependency '%s' was added, but the lockfile could not be refreshed: %s",
-                tostring(arguments.pkg),
-                tostring(sync_error)
-            ))
+            return fail(services,
+                string.format("Dependency '%s' was added, but the lockfile could not be refreshed: %s", arguments.pkg,
+                    sync_error))
         end
 
         write_line(services.stdout, string.format(
@@ -510,24 +505,21 @@ function CLI.execute(arguments, services)
     if command == "remove" then
         local removed, remove_warning = project:remove_dependency(arguments.pkg)
         if not removed then
-            local message = remove_warning or string.format(
-                "Could not remove dependency '%s'.",
-                tostring(arguments.pkg)
-            )
+            local message = remove_warning or
+                string.format("Could not remove dependency '%s'.", arguments.pkg)
             return fail(services, message)
         end
 
         local synchronized, sync_error = project:sync()
         if not synchronized then
-            return fail(services, string.format(
-                "Dependency '%s' was removed from the manifest, but the lockfile could not be refreshed: %s",
-                tostring(arguments.pkg),
-                tostring(sync_error)
-            ))
+            return fail(services,
+                string.format(
+                    "Dependency '%s' was removed from the manifest, but the lockfile could not be refreshed: %s",
+                    arguments.pkg, sync_error))
         end
 
         if remove_warning then
-            write_line(services.stderr, "warning: " .. tostring(remove_warning), io.stderr)
+            write_line(services.stderr, "warning: " .. remove_warning, io.stderr)
         end
 
         write_line(services.stdout, string.format("Removed dependency '%s'.", arguments.pkg), io.stdout)
@@ -567,7 +559,7 @@ function CLI.execute(arguments, services)
 
             write_line(
                 services.stdout,
-                string.format("Lua %s is installed and selected for this project.", tostring(version)),
+                string.format("Lua %s is installed and selected for this project.", version),
                 io.stdout
             )
             return 0
@@ -598,10 +590,10 @@ function CLI.execute(arguments, services)
                 return fail(services, remove_error)
             end
 
-            write_line(services.stdout, string.format(
-                "Removed Lua %s from the shared cache. Other projects using this runtime may need to reinstall it.",
-                tostring(arguments.lua_version)
-            ), io.stdout)
+            write_line(services.stdout,
+                string.format(
+                    "Removed Lua %s from the shared cache. Other projects using this runtime may need to reinstall it.",
+                    arguments.lua_version), io.stdout)
             return 0
         end
 
