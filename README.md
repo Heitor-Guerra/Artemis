@@ -21,19 +21,19 @@ The workflow takes inspiration from modern language tooling while remaining focu
 ### Initialize a project
 
 ```sh
-artms init
+artemis init
 ```
 
 Creates a project manifest and a starter source file in the current directory. An optional project name could be accepted:
 
 ```sh
-artms init my-project
+artemis init my-project
 ```
 
 ### Add a dependency
 
 ```sh
-artms add luasocket
+artemis add luasocket
 ```
 
 Adds the package to the project's dependency declarations and, once dependency resolution is implemented, updates the lockfile.
@@ -41,7 +41,7 @@ Adds the package to the project's dependency declarations and, once dependency r
 ### Synchronize the project
 
 ```sh
-artms sync
+artemis sync
 ```
 
 Reads the manifest (and, when available, the lockfile), installs the requested Lua version, and installs the project's dependencies into a local environment directory.
@@ -53,20 +53,14 @@ Reads the manifest (and, when available, the lockfile), installs the requested L
 The following is the **expected TOML format**. It is an example to make the project shape concrete.
 
 ```toml
-[project]
-name = "artemis"
-description = "A feature-rich lua project manager"
-lua = "5.5"
-maintainer = "Heitor Guerra Proveti <heitor.guerra@proton.me>"
+name = "my-project"
+version = "0.1.0"
+description = "A Lua project managed by Artemis"
+lua = "5.4"
+main = "src/main.lua"
 
 [dependencies]
-argparse = "0.7.2-1"
-
-[run]
-args = [ "src/main.lua" ]
-
-[build]
-type = "builtin"
+argparse = ">= 0.7.2, < 1.0"
 ```
 
 ---
@@ -75,8 +69,8 @@ type = "builtin"
 
 ```text
 my-project/
-├── artemis.toml           # Project metadata and dependency declarations
-├── artemis.lock           # Resolved dependency versions
+├── artemis-project.toml           # Project metadata and dependency declarations
+├── artemis-project.lock           # Resolved dependency versions
 ├── src/
 │   └── main.lua           # Main file selected by the project
 └── .artemis/              # Project-local Lua runtime and installed packages
