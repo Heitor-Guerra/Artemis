@@ -226,6 +226,56 @@ local function fail(services, message)
     return 1
 end
 
+--- Find the nearest ancestor containing an Artemis manifest.
+--- Search stops at the home directory or filesystem root.
+--- @param start_directory string
+--- @param manifest_name string
+--- @return string? project_root
+--- @return string? error_message
+local function find_project_root(start_directory, manifest_name)
+    local current, resolve_error = resolve_directory(start_directory)
+    if not current then
+        return nil, resolve_error
+    end
+
+    local starting_directory = current
+
+    -- Resolve HOME so it can be compared with the current directory.
+    local home_directory
+    local home = os.getenv("HOME")
+
+    if home and home ~= "" then
+        home_directory = resolve_directory(home)
+    end
+
+    while true do
+        local manifest_path = join_path(current, manifest_name)
+
+        if file_exists(manifest_path) then
+            return current
+        end
+
+        -- Stop after checking HOME.
+        if current == home_directory or current == "/" then
+            break
+        end
+
+        local parent = parent_directory(current)
+
+        if parent == current then
+            break
+        end
+
+        current = parent
+    end
+
+    return nil, string.format(
+        "Could not find '%s' starting from '%s'.",
+        manifest_name,
+        starting_directory
+    )
+end
+
 --- Construct a Project for a parsed command.
 --- @param arguments  Artemis.CLIArguments
 --- @param services   Artemis.CLIServices
@@ -238,8 +288,17 @@ local function open_project(arguments, services)
         cache_dir = arguments.cache_dir
     }
 
+    local root, root_error = find_project_root(
+        arguments.directory or ".",
+        options.manifest_path
+    )
+
+    if not root then
+        return nil, root_error
+    end
+
     local factory = services.project_factory or Project.new
-    return factory(arguments.directory or ".", options)
+    return factory(root, options)
 end
 
 --- Initialize a new project manifest and starter script.

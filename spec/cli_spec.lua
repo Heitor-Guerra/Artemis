@@ -1,7 +1,8 @@
---- @diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
+--- @diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil, duplicate-set-field
 local CLI = require("artemis.cli")
 local Manifest = require("artemis.manifest")
 local helpers = require("spec.helpers")
+local lfs = require("lfs")
 
 local function capture_writer()
     local lines = {}
@@ -104,17 +105,76 @@ local function make_services(project)
     local created_project
     local created_options
 
-    return {
+    local services = {
         stdout = stdout,
         stderr = stderr,
-        project_factory = function(root, options)
+        project_factory = function(root, project_options)
             created_project = project
-            created_options = { root = root, options = options }
+            created_options = { root = root, options = project_options }
             return project
         end
-    }, output, errors, function()
+    }
+
+    return services, output, errors, function()
         return created_project, created_options
     end
+end
+
+local function make_directory(path)
+    local first, second, third = os.execute("mkdir -p " .. helpers.shell_quote(path))
+    assert.is_true(helpers.command_succeeded(first, second, third))
+end
+
+local function write_project_manifest(directory, manifest_name, project_name)
+    make_directory(directory)
+    return helpers.write_file(
+        directory .. "/" .. manifest_name,
+        string.format("name = %q\nlua = '5.4'\n", project_name or "discovered-project")
+    )
+end
+
+local function with_current_directory(path, callback)
+    local original_directory = assert(lfs.currentdir())
+    local changed, change_error = lfs.chdir(path)
+    assert.is_true(changed, tostring(change_error))
+
+    local results = { pcall(callback) }
+    local restored, restore_error = lfs.chdir(original_directory)
+    assert.is_true(restored, tostring(restore_error))
+
+    if not results[1] then
+        error(results[2], 0)
+    end
+
+    table.remove(results, 1)
+    return table.unpack(results)
+end
+
+local function with_environment(overrides, callback)
+    local original_getenv = os.getenv
+    os.getenv = function(name)
+        if overrides[name] ~= nil then
+            return overrides[name]
+        end
+        return original_getenv(name)
+    end
+
+    local results = { pcall(callback) }
+    os.getenv = original_getenv
+
+    if not results[1] then
+        error(results[2], 0)
+    end
+
+    table.remove(results, 1)
+    return table.unpack(results)
+end
+
+local function unique_manifest_name()
+    local temporary_path = os.tmpname()
+    os.remove(temporary_path)
+    local suffix = temporary_path:match("([^/\\]+)$") or tostring(os.time())
+    return "artemis-cli-spec-" .. suffix .. ".toml"
 end
 
 describe("artemis.cli parser", function()
@@ -214,6 +274,34 @@ describe("artemis.cli parser", function()
 end)
 
 describe("artemis.cli command dispatch", function()
+    local original_directory
+    local test_project_directory
+
+    before_each(function()
+        original_directory = assert(lfs.currentdir())
+        test_project_directory = helpers.temp_dir()
+        write_project_manifest(test_project_directory, "artemis-project.toml", "dispatch-project")
+
+        -- The selected-options test starts discovery from this child directory
+        -- and uses a custom manifest filename.
+        local sample_directory = test_project_directory .. "/sample"
+        make_directory(sample_directory)
+        write_project_manifest(sample_directory, "custom.toml", "custom-project")
+
+        local changed, change_error = lfs.chdir(test_project_directory)
+        assert.is_true(changed, tostring(change_error))
+    end)
+
+    after_each(function()
+        if original_directory then
+            local restored, restore_error = lfs.chdir(original_directory)
+            assert.is_true(restored, tostring(restore_error))
+        end
+        helpers.remove_dir(test_project_directory)
+        original_directory = nil
+        test_project_directory = nil
+    end)
+
     it("prints the generated top-level help when no command is selected", function()
         local stdout, output = capture_writer()
         local stderr, errors = capture_writer()
@@ -232,7 +320,7 @@ describe("artemis.cli command dispatch", function()
 
         assert.equals(0, exit_code)
         assert.equals(1, project.sync_calls)
-        assert.equals("sample", configuration.root)
+        assert.equals(test_project_directory .. "/sample", configuration.root)
         assert.equals("custom.toml", configuration.options.manifest_path)
         assert.equals("artemis-project.lock", configuration.options.lockfile_path)
         assert.equals("Synchronized 'cli-project' with Lua 5.4.9.", output[1])
@@ -395,6 +483,28 @@ describe("artemis.cli command dispatch", function()
 end)
 
 describe("artemis.cli failure handling", function()
+    local original_directory
+    local test_project_directory
+
+    before_each(function()
+        original_directory = assert(lfs.currentdir())
+        test_project_directory = helpers.temp_dir()
+        write_project_manifest(test_project_directory, "artemis-project.toml", "failure-project")
+
+        local changed, change_error = lfs.chdir(test_project_directory)
+        assert.is_true(changed, tostring(change_error))
+    end)
+
+    after_each(function()
+        if original_directory then
+            local restored, restore_error = lfs.chdir(original_directory)
+            assert.is_true(restored, tostring(restore_error))
+        end
+        helpers.remove_dir(test_project_directory)
+        original_directory = nil
+        test_project_directory = nil
+    end)
+
     it("returns a nonzero status when synchronization fails", function()
         local project = make_project({ sync_result = false, sync_error = "runtime build failed" })
         local services, output, errors = make_services(project)
@@ -480,7 +590,172 @@ describe("artemis.cli failure handling", function()
     end)
 end)
 
+
+describe("artemis.cli project-root discovery", function()
+    it("uses a manifest in the current working directory", function()
+        helpers.with_temp_dir(function(root)
+            write_project_manifest(root, "artemis-project.toml", "current-project")
+            local project = make_project()
+            local services, _, _, captured = make_services(project)
+
+            with_current_directory(root, function()
+                local exit_code = CLI.main({ "sync" }, services)
+                local _, configuration = captured()
+
+                assert.equals(0, exit_code)
+                assert.equals(root, configuration.root)
+            end)
+        end)
+    end)
+
+    it("discovers a manifest in the parent directory", function()
+        helpers.with_temp_dir(function(root)
+            local child = root .. "/src"
+            write_project_manifest(root, "artemis-project.toml", "parent-project")
+            make_directory(child)
+
+            local project = make_project()
+            local services, _, _, captured = make_services(project)
+            local exit_code = CLI.execute({ command = "sync", directory = child }, services)
+            local _, configuration = captured()
+
+            assert.equals(0, exit_code)
+            assert.equals(root, configuration.root)
+        end)
+    end)
+
+    it("discovers a manifest several levels above the starting directory", function()
+        helpers.with_temp_dir(function(root)
+            local nested = root .. "/src/modules/database"
+            write_project_manifest(root, "artemis-project.toml", "ancestor-project")
+            make_directory(nested)
+
+            local project = make_project()
+            local services, _, _, captured = make_services(project)
+            local exit_code = CLI.execute({ command = "sync", directory = nested }, services)
+            local _, configuration = captured()
+
+            assert.equals(0, exit_code)
+            assert.equals(root, configuration.root)
+        end)
+    end)
+
+    it("selects the nearest manifest when both the current directory and a parent contain one", function()
+        helpers.with_temp_dir(function(root)
+            local child = root .. "/packages/child"
+            local nested = child .. "/src"
+            write_project_manifest(root, "artemis-project.toml", "parent-project")
+            write_project_manifest(child, "artemis-project.toml", "child-project")
+            make_directory(nested)
+
+            local project = make_project()
+            local services, _, _, captured = make_services(project)
+            local exit_code = CLI.execute({ command = "sync", directory = nested }, services)
+            local _, configuration = captured()
+
+            assert.equals(0, exit_code)
+            assert.equals(child, configuration.root)
+        end)
+    end)
+
+    it("does not search above the home directory", function()
+        helpers.with_temp_dir(function(root)
+            local home = root .. "/home"
+            local nested = home .. "/projects/child"
+            local manifest_name = unique_manifest_name()
+
+            -- A manifest above HOME must not be selected.
+            write_project_manifest(root, manifest_name, "outside-home-project")
+            make_directory(nested)
+
+            with_environment({ HOME = home }, function()
+                local project = make_project()
+                local services, _, errors, captured = make_services(project)
+                local exit_code = CLI.execute({
+                    command = "sync",
+                    directory = nested,
+                    manifest = manifest_name
+                }, services)
+
+                local created = captured()
+                assert.equals(1, exit_code)
+                assert.matches("Could not find", errors[1])
+                assert.is_nil(created)
+            end)
+        end)
+    end)
+
+    it("returns an error after searching through the filesystem root", function()
+        helpers.with_temp_dir(function(root)
+            local nested = root .. "/src/modules"
+            local manifest_name = unique_manifest_name()
+            make_directory(nested)
+
+            -- Use an existing HOME path outside the search chain so discovery
+            -- must reach / without producing a failed `cd` diagnostic.
+            local outside_home = root .. "/outside-home"
+            make_directory(outside_home)
+            with_environment({ HOME = outside_home }, function()
+                local project = make_project()
+                local services, _, errors, captured = make_services(project)
+                local exit_code = CLI.execute({
+                    command = "sync",
+                    directory = nested,
+                    manifest = manifest_name
+                }, services)
+
+                local created = captured()
+                assert.equals(1, exit_code)
+                assert.matches("Could not find", errors[1])
+                assert.is_nil(created)
+            end)
+        end)
+    end)
+
+    it("uses an explicit -C directory as the starting point for discovery", function()
+        helpers.with_temp_dir(function(root)
+            local child = root .. "/src/modules"
+            write_project_manifest(root, "artemis-project.toml", "explicit-directory-project")
+            make_directory(child)
+
+            local project = make_project()
+            local services, _, _, captured = make_services(project)
+            local exit_code = CLI.main({ "sync", "-C", child }, services)
+            local _, configuration = captured()
+
+            assert.equals(0, exit_code)
+            assert.equals(root, configuration.root)
+        end)
+    end)
+end)
+
 describe("artemis.cli project initialization", function()
+    it("initializes in the requested child directory instead of attaching to a parent project", function()
+        helpers.with_temp_dir(function(root)
+            local child = root .. "/src/modules"
+            local parent_manifest = write_project_manifest(root, "artemis-project.toml", "parent-project")
+            local original_parent_manifest = helpers.read_file(parent_manifest)
+            make_directory(child)
+
+            local stdout, output = capture_writer()
+            local stderr, errors = capture_writer()
+            local exit_code = CLI.execute({
+                command = "init",
+                directory = child,
+                name = "child-project"
+            }, {
+                stdout = stdout,
+                stderr = stderr
+            })
+
+            assert.equals(0, exit_code)
+            assert.equals(0, #errors)
+            assert.is_truthy(Manifest.load(child .. "/artemis-project.toml"))
+            assert.equals(original_parent_manifest, helpers.read_file(parent_manifest))
+            assert.matches("Initialized project 'child%-project'", output[1])
+        end)
+    end)
+
     it("creates a manifest and a starter script", function()
         helpers.with_temp_dir(function(root)
             local stdout, output = capture_writer()
