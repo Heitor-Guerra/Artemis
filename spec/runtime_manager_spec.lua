@@ -90,6 +90,29 @@ describe("artemis.runtime_manager", function()
     end)
   end)
 
+  it("parses release entries when the download index uses non-table markup", function()
+    helpers.with_temp_dir(function(root)
+      local manager = make_manager(root)
+      local old_checksum = string.rep("a", 64)
+      local latest_checksum = string.rep("b", 64)
+      manager._fetch_release_index = function()
+        return table.concat({
+          "<html><body>",
+          "<div><a href=\"lua-5.4.8.tar.gz\">lua-5.4.8.tar.gz</a>",
+          "<span>SHA-256: " .. old_checksum .. "</span></div>",
+          "<div><a href=\"lua-5.4.9.tar.gz\">lua-5.4.9.tar.gz</a>",
+          "<span>SHA-256: " .. latest_checksum .. "</span></div>",
+          "</body></html>"
+        }, "\n")
+      end
+
+      local version, checksum, err = manager:resolve_version("5.4")
+      assert.is_nil(err)
+      assert.equals("5.4.9", version)
+      assert.equals(latest_checksum, checksum)
+    end)
+  end)
+
   it("reuses an already installed exact runtime without downloading or building", function()
     helpers.with_temp_dir(function(root)
       local manager = make_manager(root)

@@ -43,7 +43,7 @@ local RuntimeManager = {}
 RuntimeManager.__index = RuntimeManager
 
 --- @type string
-RuntimeManager.DEFAULT_SOURCE_INDEX_URL = "https://www.lua.org/ftp/"
+RuntimeManager.DEFAULT_SOURCE_INDEX_URL = "https://www.lua.org/ftp/index.html"
 
 ------------------------------------ Local Functions ------------------------------------
 
@@ -318,32 +318,57 @@ local function checksum_from_row(row)
     return nil
 end
 
---- Find a release row and its SHA-256 checksum in the official download index.
+--- Find a release entry and its SHA-256 checksum in the official download index.
+--- The Lua download page is HTML, but this parser deliberately does not depend
+--- on lowercase table tags or on the filename appearing only once per row.
 --- @param html     string
 --- @param version  string
 --- @return string?  checksum
 local function find_release_checksum(html, version)
     local filename = "lua-" .. version .. ".tar.gz"
-    local filename_position = html:find(filename, 1, true)
-    if not filename_position then
-        return nil
-    end
+    local lower_html = html:lower()
+    local search_position = 1
 
-    local prefix = html:sub(1, filename_position)
-    --- @type number|string?
-    local row_start = 1
-    for position in prefix:gmatch("()<tr") do
-        row_start = position
-    end
+    while true do
+        local filename_start, filename_end = lower_html:find(filename, search_position, true)
+        if not filename_start then
+            return nil
+        end
 
-    local row_end = html:find("</tr>", filename_position, true)
-    if not row_end then
-        row_end = math.min(#html, filename_position + 2048)
-    end
+        -- Include the complete table row when one is present. Some pages or
+        -- mirrors may omit table rows, so fall back to the next release entry.
+        local row_start = filename_start
+        for position in lower_html:gmatch("()<tr") do
+            if position > filename_start then
+                break
+            end
+            row_start = position
+        end
 
-    --- @diagnostic disable-next-line: param-type-mismatch
-    local row = html:sub(row_start, row_end + 4)
-    return checksum_from_row(row)
+        local row_end = lower_html:find("</tr>", filename_end, true)
+        local next_filename_start = lower_html:find(
+            "lua%-[%d]+%.%d+%.%d+%.tar%.gz",
+            filename_end + 1
+        )
+
+        if next_filename_start and (not row_end or next_filename_start < row_end) then
+            row_end = next_filename_start - 1
+        end
+
+        if not row_end then
+            row_end = math.min(#html, filename_end + 2048)
+        end
+
+        local row = html:sub(row_start, row_end)
+        local checksum = checksum_from_row(row)
+        if checksum then
+            return checksum
+        end
+
+        -- An anchor may contain the filename both in href and link text. Try
+        -- the next occurrence before giving up on this release entry.
+        search_position = filename_end + 1
+    end
 end
 
 -----------------------------------------------------------------------------------------
@@ -447,26 +472,39 @@ function RuntimeManager:_resolve_latest_series(series)
     --- @type number?
     local latest_patch = -1
     local latest_checksum
+    local seen_versions = {}
 
-    for row in html:gmatch("<tr[^>]*>(.-)</tr>") do
-        local version = row:match("lua%-([%d%.]+)%.tar%.gz")
-        if version then
+    -- Search for release filenames across the whole document instead of
+    -- depending on a particular <tr> layout. The official index may change its
+    -- surrounding HTML without changing the release filenames/checksums.
+    for version in html:lower():gmatch("lua%-(%d+%.%d+%.%d+)%.tar%.gz") do
+        if not seen_versions[version] then
+            seen_versions[version] = true
             local row_series, patch = version:match("^(%d+%.%d+)%.(%d+)$")
-            if row_series == series and tonumber(patch) > latest_patch then
-                local checksum = checksum_from_row(row)
-                if checksum then
-                    latest_version = version
-                    latest_patch = tonumber(patch)
-                    latest_checksum = checksum
-                end
+            patch = tonumber(patch)
+
+            if row_series == series and patch and patch > latest_patch then
+                latest_version = version
+                latest_patch = patch
+                latest_checksum = find_release_checksum(html, version)
             end
         end
     end
 
     if not latest_version then
         return nil, nil, string.format(
-            "No released Lua versions matching series %s were found in the official download index.",
-            series
+            "No released Lua versions matching series %s were found at %s. "
+                .. "The download index was retrieved, but no matching release filename was recognized.",
+            series,
+            self.source_index_url
+        )
+    end
+
+    if not latest_checksum then
+        return nil, nil, string.format(
+            "Lua %s appears in the official download index, but Artemis could not parse its SHA-256 checksum from %s.",
+            latest_version,
+            self.source_index_url
         )
     end
 
