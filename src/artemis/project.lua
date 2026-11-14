@@ -10,6 +10,7 @@ local Manifest = require("artemis.manifest")
 local RuntimeManager = require("artemis.runtime_manager")
 local DependencyManager = require("artemis.dependency_manager")
 local Lockfile = require("artemis.lockfile")
+local lfs = require("lfs")
 
 --- @class Artemis.ProjectOptions
 --- @field manifest_path?       string                            Path to the project manifest. Defaults to artemis-project.toml.
@@ -44,13 +45,6 @@ Project.__index = Project
 
 ------------------------------------ Local Functions ------------------------------------
 
---- Quote a value as one POSIX shell argument.
---- @param value  string
---- @return string
-local function shell_quote(value)
-    return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
-end
-
 --- Join two filesystem paths using Unix separators.
 --- @param first   string
 --- @param second  string
@@ -71,67 +65,83 @@ local function is_absolute_path(path)
     return path:sub(1, 1) == "/" or path:match("^%a:[/\\]") ~= nil
 end
 
---- Resolve a directory to an absolute path.
---- @param path  string
---- @return string?  absolute_path
---- @return string?  error_message
-local function resolve_directory(path)
-    local handle, open_error = io.popen("cd " .. shell_quote(path) .. " && pwd", "r")
-    if not handle then
-        return nil, string.format("Could not resolve project directory: %s", tostring(open_error))
-    end
-
-    local absolute_path = (handle:read("*l") or ""):gsub("\r$", "")
-    local first, second, third = handle:close()
-
-    if absolute_path == "" or not (first == true or first == 0 or (second == "exit" and third == 0)) then
-        return nil, string.format("Project directory '%s' does not exist or cannot be accessed.", path)
-    end
-
-    return absolute_path
+--- Quote a value as one POSIX shell argument.
+--- @param value  string
+--- @return string
+local function shell_quote(value)
+    return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
 end
 
 --- Interpret os.execute/io.popen close results across Lua versions.
---- @param first   any
---- @param second  any
---- @param third   any
+--- @param success   true?
+--- @param exitcode  "exit"|"signal"?
+--- @param code      integer?
 --- @return boolean
-local function command_succeeded(first, second, third)
-    if first == true or first == 0 then
+local function command_succeeded(success, exitcode, code)
+    if success == true then
         return true
     end
 
-    return second == "exit" and third == 0
+    return exitcode == "exit" and code == 0
 end
 
---- Run a command and return whether it succeeded.
+--- Run a command without capturing its output.
 --- @param command  string
 --- @return boolean  success
 --- @return string?  error_message
 local function execute_command(command)
-    local first, second, third = os.execute(command)
-    if command_succeeded(first, second, third) then
+    local success, exitcode, code = os.execute(command)
+    if command_succeeded(success, exitcode, code) then
         return true
     end
 
-    return false, string.format(
-        "Command failed (status: %s): %s",
-        tostring(third or second or first),
-        command
-    )
+    return false, string.format("Command failed (status: %s): %s", tostring(code or exitcode or success), command)
 end
 
---- Check whether a file exists and can be opened.
+--- Run a command and return its combined standard output and standard error.
+--- @param command  string
+--- @return string?  output
+--- @return string?  error_message
+local function capture_command(command)
+    --- Concatenate command to " 2>&1" to redirect stderr to stdout
+    local handle, open_error = io.popen(command .. " 2>&1", "r")
+    if not handle then
+        return nil, string.format("Could not execute command: %s", open_error)
+    end
+
+    local output = handle:read("a") or ""
+    local success, exitcode, code = handle:close()
+
+    if not command_succeeded(success, exitcode, code) then
+        return nil, string.format(
+            "Command failed (status: %s):\n%s",
+            tostring(code or exitcode or success),
+            output
+        )
+    end
+
+    return output
+end
+
+--- Resolve a directory to an absolute path.
+--- @param path  string
+--- @return string?  absolute_path
+--- @return string?  error_message
+local function absolute_directory(path)
+    local output, command_error = capture_command("cd " .. shell_quote(path) .. " && pwd")
+    if not output then
+        return nil, command_error
+    end
+
+    return output:match("^([^\r\n]+)")
+end
+
+--- Check whether a file exists.
 --- @param path  string
 --- @return boolean
 local function file_exists(path)
-    local file = io.open(path, "rb")
-    if not file then
-        return false
-    end
-
-    file:close()
-    return true
+    local mode = lfs.attributes(path, "mode")
+    return mode == "file"
 end
 
 --- Copy a shallow options table so callers' tables are not modified.
@@ -183,9 +193,9 @@ function Project.new(project_root, options)
         return nil, "Project options must be a table."
     end
 
-    local root, root_error = resolve_directory(project_root)
+    local root = absolute_directory(project_root)
     if not root then
-        return nil, root_error
+        return nil, string.format("Project directory '%s' does not exist or cannot be accessed.", project_root)
     end
 
     local requested_manifest_path = options.manifest_path
@@ -214,7 +224,7 @@ function Project.new(project_root, options)
 
     local valid, validation_error = manifest:validate()
     if not valid then
-        return nil, string.format("Invalid project manifest:\n%s", tostring(validation_error))
+        return nil, string.format("Invalid project manifest:\n%s", validation_error)
     end
 
     -- Keep all manifest writes anchored to this project's manifest file.
@@ -327,11 +337,9 @@ function Project:install_runtime(requested_version)
 
     local dependency_manager, dependency_error = self:_create_dependency_manager(runtime_path)
     if not dependency_manager then
-        return false, string.format(
-            "Lua %s is installed, but LuaRocks could not be configured for it: %s",
-            tostring(version),
-            tostring(dependency_error)
-        )
+        return false,
+            string.format("Lua %s is installed, but LuaRocks could not be configured for it: %s", version,
+                dependency_error)
     end
 
     self.dependency_manager = dependency_manager
@@ -360,7 +368,7 @@ function Project:sync()
         local loaded_lockfile, load_error = Lockfile.load(self.lockfile_path)
         if not loaded_lockfile then
             return false,
-                string.format("Could not load Artemis lockfile '%s': %s", self.lockfile_path, tostring(load_error))
+                string.format("Could not load Artemis lockfile '%s': %s", self.lockfile_path, load_error)
         end
 
         local matches_manifest, mismatch_reason = loaded_lockfile:matches_manifest(self.manifest)
@@ -402,8 +410,7 @@ function Project:sync()
             local saved, save_error = active_lockfile:save(self.lockfile_path)
             if not saved then
                 return false,
-                    string.format("Dependencies were installed, but the lockfile could not be updated: %s",
-                        tostring(save_error))
+                    string.format("Dependencies were installed, but the lockfile could not be updated: %s", save_error)
             end
         end
 

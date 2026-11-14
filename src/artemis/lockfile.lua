@@ -166,8 +166,7 @@ local function validate_data(data)
         errors[#errors + 1] = string.format(
             "Unsupported lockfile version '%s'; this Artemis version supports format %d.",
             tostring(data.lockfile_version),
-            Lockfile.FORMAT_VERSION
-        )
+            Lockfile.FORMAT_VERSION)
     end
 
     if not is_non_empty_string(data.generated_by) then
@@ -737,34 +736,26 @@ function Lockfile:save(path)
     local temporary_path = path .. ".tmp"
     local file, open_error = io.open(temporary_path, "wb")
     if not file then
-        return false, string.format(
-            "Could not open temporary lockfile '%s': %s",
-            temporary_path,
-            tostring(open_error)
-        )
+        return false, string.format("Could not open temporary lockfile '%s': %s", temporary_path, open_error)
     end
 
     local write_result, write_error = file:write(encoded)
     if not write_result then
         file:close()
         os.remove(temporary_path)
-        return false, string.format("Could not write lockfile '%s': %s", path, tostring(write_error))
+        return false, string.format("Could not write lockfile '%s': %s", path, write_error)
     end
 
     local close_result, close_error = file:close()
     if not close_result then
         os.remove(temporary_path)
-        return false, string.format("Could not close lockfile '%s': %s", path, tostring(close_error))
+        return false, string.format("Could not close lockfile '%s': %s", path, close_error)
     end
 
     local rename_result, rename_error = os.rename(temporary_path, path)
     if not rename_result then
         os.remove(temporary_path)
-        return false, string.format(
-            "Could not replace lockfile '%s': %s",
-            path,
-            tostring(rename_error)
-        )
+        return false, string.format("Could not replace lockfile '%s': %s", path, rename_error)
     end
 
     self.path = path

@@ -342,18 +342,18 @@ function Manifest:save(path)
 
     local file, open_error = io.open(path, "wb")
     if not file then
-        return false, string.format("Could not open '%s' for writing: %s", path, tostring(open_error))
+        return false, string.format("Could not open '%s' for writing: %s", path, open_error)
     end
 
     local write_result, write_error = file:write(encoded)
     if not write_result then
         file:close()
-        return false, string.format("Could not write manifest '%s': %s", path, tostring(write_error))
+        return false, string.format("Could not write manifest '%s': %s", path, write_error)
     end
 
-    local close_result, close_error = file:close()
+    local close_result, close_reason = file:close()
     if not close_result then
-        return false, string.format("Could not close manifest '%s': %s", path, tostring(close_error))
+        return false, string.format("Could not close manifest '%s': %s", path, close_reason)
     end
 
     self.path = path

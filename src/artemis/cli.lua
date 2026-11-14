@@ -9,6 +9,7 @@ local argparse = require("argparse")
 local Manifest = require("artemis.manifest")
 local Lockfile = require("artemis.lockfile")
 local Project = require("artemis.project")
+local lfs = require("lfs")
 
 --- @alias Artemis.CLIWriter fun(message: string)
 --- @alias Artemis.CLIProjectFactory fun(root: string, options: Artemis.ProjectOptions): Artemis.Project?, string?
@@ -59,13 +60,17 @@ local function shell_quote(value)
     return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
 end
 
---- Check whether a command completed successfully across Lua versions.
---- @param first   any
---- @param second  any
---- @param third   any
+--- Interpret os.execute/io.popen close results across Lua versions.
+--- @param success   true?
+--- @param exitcode  "exit"|"signal"?
+--- @param code      integer?
 --- @return boolean
-local function command_succeeded(first, second, third)
-    return first == true or first == 0 or (second == "exit" and third == 0)
+local function command_succeeded(success, exitcode, code)
+    if success == true then
+        return true
+    end
+
+    return exitcode == "exit" and code == 0
 end
 
 --- Create a directory and any missing parent directories.
@@ -85,7 +90,7 @@ end
 --- @param path  string
 --- @return string?  absolute_path
 --- @return string?  error_message
-local function resolve_directory(path)
+local function absolute_directory(path)
     local handle, open_error = io.popen("cd " .. shell_quote(path) .. " && pwd", "r")
     if not handle then
         return nil, string.format("Could not resolve directory '%s': %s", path, tostring(open_error))
@@ -124,17 +129,12 @@ local function parent_directory(path)
     return parent
 end
 
---- Check whether a file already exists.
+--- Check whether a file exists.
 --- @param path  string
 --- @return boolean
 local function file_exists(path)
-    local file = io.open(path, "rb")
-    if not file then
-        return false
-    end
-
-    file:close()
-    return true
+    local mode = lfs.attributes(path, "mode")
+    return mode == "file"
 end
 
 --- Write a file only when it does not already exist.
@@ -233,7 +233,7 @@ end
 --- @return string? project_root
 --- @return string? error_message
 local function find_project_root(start_directory, manifest_name)
-    local current, resolve_error = resolve_directory(start_directory)
+    local current, resolve_error = absolute_directory(start_directory)
     if not current then
         return nil, resolve_error
     end
@@ -245,7 +245,7 @@ local function find_project_root(start_directory, manifest_name)
     local home = os.getenv("HOME")
 
     if home and home ~= "" then
-        home_directory = resolve_directory(home)
+        home_directory = absolute_directory(home)
     end
 
     while true do
@@ -312,7 +312,7 @@ local function initialize_project(arguments, services)
         return fail(services, directory_error)
     end
 
-    local absolute_directory, resolve_error = resolve_directory(requested_directory)
+    local absolute_directory, resolve_error = absolute_directory(requested_directory)
     if not absolute_directory then
         return fail(services, resolve_error)
     end
@@ -370,10 +370,8 @@ local function initialize_project(arguments, services)
         return fail(services, script_error)
     end
 
-    write_line(services.stdout, string.format("Initialized project '%s' in %s", name, absolute_directory), io.stdout)
-    write_line(services.stdout, "Next steps:", io.stdout)
-    write_line(services.stdout, "  artemis sync", io.stdout)
-    write_line(services.stdout, "  artemis run", io.stdout)
+    write_line(services.stdout, string.format("Initialized empty project '%s' in %s", name, absolute_directory),
+        io.stdout)
     return 0
 end
 
