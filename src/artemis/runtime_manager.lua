@@ -97,7 +97,7 @@ local function capture_command(command)
     --- Concatenate command to " 2>&1" to redirect stderr to stdout
     local handle, open_error = io.popen(command .. " 2>&1", "r")
     if not handle then
-        return nil, string.format("Could not execute command: %s", tostring(open_error))
+        return nil, string.format("Could not execute command: %s", open_error)
     end
 
     local output = handle:read("a") or ""
@@ -157,18 +157,18 @@ local function write_file(path, contents)
 
     local file, open_error = io.open(path, "wb")
     if not file then
-        return false, string.format("Could not open '%s' for writing: %s", path, tostring(open_error))
+        return false, string.format("Could not open '%s' for writing: %s", path, open_error)
     end
 
     local write_ok, write_error = file:write(contents)
     if not write_ok then
         file:close()
-        return false, string.format("Could not write '%s': %s", path, tostring(write_error))
+        return false, string.format("Could not write '%s': %s", path, write_error)
     end
 
-    local close_ok, close_code = file:close()
+    local close_ok, close_reason = file:close()
     if not close_ok then
-        return false, string.format("Could not close '%s': %s", path, tostring(close_code))
+        return false, string.format("Could not close '%s': %s", path, close_reason)
     end
 
     return true
@@ -269,12 +269,12 @@ local function resolve_cache_dir(project_root, requested_cache_dir)
     end
     local parent_created, parent_create_error = execute_command("mkdir -p " .. shell_quote(parent))
     if not parent_created then
-        return nil, string.format("Could not create Artemis cache parent directory: %s", tostring(parent_create_error))
+        return nil, string.format("Could not create Artemis cache parent directory: %s", parent_create_error)
     end
 
     local absolute_parent, parent_error = absolute_directory(parent)
     if not absolute_parent then
-        return nil, string.format("Could not resolve Artemis cache directory: %s", tostring(parent_error))
+        return nil, string.format("Could not resolve Artemis cache directory: %s", parent_error)
     end
 
     local basename = candidate:match("([^/]+)$") or "artemis"
@@ -414,19 +414,16 @@ function RuntimeManager:_get_release_checksum(version)
 
     local html, index_error = self:_fetch_release_index()
     if not html then
-        return nil, string.format(
-            "Could not retrieve the official Lua release index to verify Lua %s: %s",
-            version,
-            tostring(index_error)
-        )
+        return nil,
+            string.format("Could not retrieve the official Lua release index to verify Lua %s: %s", version, index_error)
     end
 
     local checksum = find_release_checksum(html, version)
     if not checksum then
-        return nil, string.format(
-            "Lua %s was not found in the official download index, or its SHA-256 checksum could not be parsed.",
-            version
-        )
+        return nil,
+            string.format(
+                "Lua %s was not found in the official download index, or its SHA-256 checksum could not be parsed.",
+                version)
     end
 
     local saved, save_error = write_file(checksum_path, checksum .. "\n")
@@ -471,11 +468,8 @@ function RuntimeManager:_resolve_latest_series(series)
 
     local html, index_error = self:_fetch_release_index()
     if not html then
-        return nil, nil, string.format(
-            "Could not resolve Lua %s without the official release index: %s",
-            series,
-            tostring(index_error)
-        )
+        return nil, nil,
+            string.format("Could not resolve Lua %s without the official release index: %s", series, index_error)
     end
 
     local latest_version
@@ -555,7 +549,7 @@ function RuntimeManager:_sha256(archive_path)
 
     local output, command_error = capture_command(command)
     if not output then
-        return nil, string.format("Could not calculate SHA-256: %s", tostring(command_error))
+        return nil, string.format("Could not calculate SHA-256: %s", command_error)
     end
 
     local checksum = output:match("^%s*([%da-fA-F]+)")
@@ -588,7 +582,7 @@ function RuntimeManager:_ensure_archive(version, expected_checksum)
         local removed, remove_error = execute_command("rm -f " .. shell_quote(archive_path))
         if not removed then
             return nil,
-                string.format("Cached Lua archive is invalid and could not be removed: %s", tostring(remove_error))
+                string.format("Cached Lua archive is invalid and could not be removed: %s", remove_error)
         end
     end
 
@@ -605,7 +599,7 @@ function RuntimeManager:_ensure_archive(version, expected_checksum)
     local downloaded, download_error = execute_command(download_command)
     if not downloaded then
         os.remove(temporary_path)
-        return nil, string.format("Could not download Lua %s: %s", version, tostring(download_error))
+        return nil, string.format("Could not download Lua %s: %s", version, download_error)
     end
 
     local actual_checksum, checksum_error = self:_sha256(temporary_path)
@@ -629,7 +623,7 @@ function RuntimeManager:_ensure_archive(version, expected_checksum)
     )
     if not moved then
         os.remove(temporary_path)
-        return nil, string.format("Could not move the verified archive into the cache: %s", tostring(move_error))
+        return nil, string.format("Could not move the verified archive into the cache: %s", move_error)
     end
 
     local checksum_saved, save_error = write_file(
@@ -657,7 +651,7 @@ function RuntimeManager:_build_and_install(version, archive_path)
 
     local cleaned, clean_error = execute_command("rm -rf " .. shell_quote(build_directory))
     if not cleaned then
-        return false, string.format("Could not prepare the Lua build directory: %s", tostring(clean_error))
+        return false, string.format("Could not prepare the Lua build directory: %s", clean_error)
     end
 
     local made, make_error = execute_command("mkdir -p " .. shell_quote(build_directory))
@@ -670,7 +664,7 @@ function RuntimeManager:_build_and_install(version, archive_path)
         .. " -C " .. shell_quote(build_directory)
     )
     if not extracted then
-        return false, string.format("Could not extract Lua %s: %s", version, tostring(extract_error))
+        return false, string.format("Could not extract Lua %s: %s", version, extract_error)
     end
 
     if not directory_exists(source_directory) then
@@ -682,7 +676,7 @@ function RuntimeManager:_build_and_install(version, archive_path)
         .. shell_quote(self.make) .. " all test"
     )
     if not built then
-        return false, string.format("Could not build or test Lua %s: %s", version, tostring(build_error))
+        return false, string.format("Could not build or test Lua %s: %s", version, build_error)
     end
 
     local installed, install_error = execute_command(
@@ -690,7 +684,7 @@ function RuntimeManager:_build_and_install(version, archive_path)
         .. shell_quote(self.make) .. " install INSTALL_TOP=" .. shell_quote(staging_directory)
     )
     if not installed then
-        return false, string.format("Could not stage the Lua %s installation: %s", version, tostring(install_error))
+        return false, string.format("Could not stage the Lua %s installation: %s", version, install_error)
     end
 
     if not executable_exists(executable) then
@@ -699,7 +693,7 @@ function RuntimeManager:_build_and_install(version, archive_path)
 
     local version_output, version_error = capture_command(shell_quote(executable) .. " -v")
     if not version_output then
-        return false, string.format("Could not execute the newly built Lua interpreter: %s", tostring(version_error))
+        return false, string.format("Could not execute the newly built Lua interpreter: %s", version_error)
     end
 
     if not version_output:match("Lua " .. version:gsub("%.", "%%.") .. "[%s]") then
@@ -723,7 +717,7 @@ function RuntimeManager:_build_and_install(version, archive_path)
             "mv " .. shell_quote(final_directory) .. " " .. shell_quote(backup_directory)
         )
         if not backed_up then
-            return false, string.format("Could not back up the previous Lua runtime: %s", tostring(backup_error))
+            return false, string.format("Could not back up the previous Lua runtime: %s", backup_error)
         end
     end
 
@@ -736,7 +730,7 @@ function RuntimeManager:_build_and_install(version, archive_path)
             execute_command("mv " .. shell_quote(backup_directory) .. " " .. shell_quote(final_directory))
         end
 
-        return false, string.format("Could not activate the Lua runtime: %s", tostring(promote_error))
+        return false, string.format("Could not activate the Lua runtime: %s", promote_error)
     end
 
     execute_command("rm -rf " .. shell_quote(backup_directory))
@@ -768,7 +762,7 @@ function RuntimeManager.new(project_root, manifest, options)
 
     local root, root_error = absolute_directory(project_root)
     if not root then
-        return nil, string.format("Could not resolve project root: %s", tostring(root_error))
+        return nil, string.format("Could not resolve project root: %s", root_error)
     end
 
     if options.cache_dir ~= nil and (type(options.cache_dir) ~= "string" or options.cache_dir == "") then
@@ -871,7 +865,7 @@ function RuntimeManager:install(requested_version)
         .. shell_quote(self.build_dir)
     )
     if not dirs_created then
-        return false, string.format("Could not create Artemis cache directories: %s", tostring(dirs_error))
+        return false, string.format("Could not create Artemis cache directories: %s", dirs_error)
     end
 
     if not checksum then
@@ -897,21 +891,17 @@ function RuntimeManager:install(requested_version)
             version .. "\n"
         )
         if not mapping_saved then
-            return false, string.format(
-                "Lua %s was installed, but its series mapping could not be saved: %s",
-                version,
-                tostring(mapping_error)
-            )
+            return false,
+                string.format("Lua %s was installed, but its series mapping could not be saved: %s", version,
+                    mapping_error)
         end
     end
 
     local marked, mark_error = write_file(self.project_runtime_file, version .. "\n")
     if not marked then
-        return false, string.format(
-            "Lua %s was installed, but the project's runtime selection could not be saved: %s",
-            version,
-            tostring(mark_error)
-        )
+        return false,
+            string.format("Lua %s was installed, but the project's runtime selection could not be saved: %s", version,
+                mark_error)
     end
 
     return true, nil, version
@@ -1087,7 +1077,7 @@ function RuntimeManager:uninstall(requested_version)
 
     local removed, remove_error = execute_command("rm -rf " .. shell_quote(installation_path))
     if not removed then
-        return false, string.format("Could not remove Lua %s: %s", version, tostring(remove_error))
+        return false, string.format("Could not remove Lua %s: %s", version, remove_error)
     end
 
     local series_mapping_path = join_path(self.cache_dir, "metadata/lua-series-" .. series .. ".txt")

@@ -9,6 +9,8 @@
 --- This first implementation invokes the LuaRocks CLI through a POSIX shell.
 --- @module 'artemis.dependency_manager'
 
+local lfs = require("lfs")
+
 --- @class Artemis.DependencyManagerOptions
 --- @field tree?             string  Project-local LuaRocks tree. Defaults to "lua_modules".
 --- @field luarocks?         string  LuaRocks executable or project wrapper. Defaults to "./luarocks" when present, otherwise "luarocks".
@@ -68,33 +70,28 @@ local function is_absolute_path(path)
     return path:sub(1, 1) == "/" or path:match("^%a:[/\\]") ~= nil
 end
 
---- Check whether a file can be opened for reading.
+--- Check whether a file exists.
 --- @param path  string
 --- @return boolean
 local function file_exists(path)
-    local file = io.open(path, "rb")
-    if not file then
-        return false
-    end
-
-    file:close()
-    return true
+    local mode = lfs.attributes(path, "mode")
+    return mode == "file"
 end
 
 --- Read a complete file without changing it.
 --- @param path  string
 --- @return string?  contents
 --- @return string?  error_message
-local function read_file_contents(path)
+local function read_file(path)
     local file, open_error = io.open(path, "rb")
     if not file then
-        return nil, tostring(open_error)
+        return nil, open_error
     end
 
-    local contents = file:read("*a") or ""
+    local contents = file:read("a") or ""
     local close_ok, close_error = file:close()
     if not close_ok then
-        return nil, tostring(close_error)
+        return nil, close_error
     end
 
     return contents
@@ -105,21 +102,21 @@ end
 --- @param contents  string
 --- @return boolean  success
 --- @return string?  error_message
-local function write_file_contents(path, contents)
+local function write_file(path, contents)
     local file, open_error = io.open(path, "wb")
     if not file then
-        return false, tostring(open_error)
+        return false, string.format("Could not open '%s' for writing: %s", path, open_error)
     end
 
     local write_ok, write_error = file:write(contents)
     if not write_ok then
         file:close()
-        return false, tostring(write_error)
+        return false, string.format("Could not write '%s': %s", path, write_error)
     end
 
-    local close_ok, close_error = file:close()
+    local close_ok, close_reason = file:close()
     if not close_ok then
-        return false, tostring(close_error)
+        return false, string.format("Could not close '%s': %s", path, close_reason)
     end
 
     return true
@@ -132,6 +129,71 @@ end
 --- @return string
 local function shell_quote(value)
     return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
+end
+
+--- Interpret os.execute/io.popen close results across Lua versions.
+--- @param success   true?
+--- @param exitcode  "exit"|"signal"?
+--- @param code      integer?
+--- @return boolean
+local function command_succeeded(success, exitcode, code)
+    if success == true then
+        return true
+    end
+
+    return exitcode == "exit" and code == 0
+end
+
+--- Run a command and return its combined standard output and standard error.
+--- @param command  string
+--- @return string?  output
+--- @return string?  error_message
+local function capture_command(command)
+    --- Concatenate command to " 2>&1" to redirect stderr to stdout
+    local handle, open_error = io.popen(command .. " 2>&1", "r")
+    if not handle then
+        return nil, string.format("Could not execute command: %s", open_error)
+    end
+
+    local output = handle:read("a") or ""
+    local success, exitcode, code = handle:close()
+
+    if not command_succeeded(success, exitcode, code) then
+        return nil, string.format(
+            "Command failed (status: %s):\n%s",
+            tostring(code or exitcode or success),
+            output
+        )
+    end
+
+    return output
+end
+
+--- Run a command without capturing its output.
+--- @param command  string
+--- @return boolean  success
+--- @return string?  error_message
+local function execute_command(command)
+    local success, exitcode, code = os.execute(command)
+    if command_succeeded(success, exitcode, code) then
+        return true
+    end
+
+    return false, string.format("Command failed (status: %s): %s", tostring(code or exitcode or success), command)
+end
+
+
+--- Resolve a directory to an absolute path.
+--- @param path  string
+--- @return string?  absolute_path
+--- @return string?  error_message
+local function absolute_directory(path)
+    local output, command_error = capture_command("cd " .. shell_quote(path) .. " && pwd")
+    if not output then
+        return nil, command_error
+    end
+
+    return output:match("^([^\r\n]+)")
 end
 
 --- Resolve the shared Artemis cache directory to an absolute path.
@@ -180,21 +242,14 @@ local function resolve_cache_dir(root, requested)
     if not parent or parent == "" then
         parent = "/"
     end
-    local mkdir_ok, mkdir_reason, mkdir_code = os.execute("mkdir -p " .. shell_quote(parent))
-    local mkdir_succeeded = mkdir_ok == true or mkdir_ok == 0 or (mkdir_reason == "exit" and mkdir_code == 0)
-    if not mkdir_succeeded then
-        return nil, string.format("Could not create cache parent directory '%s'.", parent)
+    local parent_created, parent_create_error = execute_command("mkdir -p " .. shell_quote(parent))
+    if not parent_created then
+        return nil, string.format("Could not create Artemis cache parent directory: %s", parent_create_error)
     end
 
-    local handle, open_error = io.popen("cd " .. shell_quote(parent) .. " && pwd", "r")
-    if not handle then
-        return nil, string.format("Could not resolve cache parent directory: %s", tostring(open_error))
-    end
-
-    local absolute_parent = (handle:read("*l") or ""):gsub("\r$", "")
-    handle:close()
-    if absolute_parent == "" then
-        return nil, "Could not resolve the absolute Artemis cache directory."
+    local absolute_parent, parent_error = absolute_directory(parent)
+    if not absolute_parent then
+        return nil, string.format("Could not resolve Artemis cache directory: %s", parent_error)
     end
 
     local basename = candidate:match("([^/]+)$") or "artemis"
@@ -259,12 +314,11 @@ local function create_luarocks_cache_config(root, cache_dir, lua_version, explic
     local config_directory = join_path(cache_dir, "luarocks")
     local config_path = join_path(config_directory, "config-" .. lua_version .. ".lua")
 
-    local mkdir_ok, mkdir_reason, mkdir_code = os.execute(
-        "mkdir -p " .. shell_quote(rocks_cache_dir) .. " " .. shell_quote(config_directory)
-    )
-    local mkdir_succeeded = mkdir_ok == true or mkdir_ok == 0 or (mkdir_reason == "exit" and mkdir_code == 0)
-    if not mkdir_succeeded then
-        return nil, nil, string.format("Could not create LuaRocks cache directory '%s'.", rocks_cache_dir)
+    local parent_created, parent_create_error = execute_command("mkdir -p " ..
+        shell_quote(rocks_cache_dir) .. " " .. shell_quote(config_directory))
+    if not parent_created then
+        return nil,
+            string.format("Could not create LuaRocks cache directory '%s': %s.", rocks_cache_dir, parent_create_error)
     end
 
     local lines = {
@@ -296,42 +350,26 @@ local function create_luarocks_cache_config(root, cache_dir, lua_version, explic
         lines[#lines + 1] = "variables.LUA_LIBDIR = " .. string.format("%q", lua_library)
     end
 
-
-
     lines[#lines + 1] = ""
 
     local file, open_error = io.open(config_path, "wb")
     if not file then
         return nil, nil,
-            string.format("Could not write LuaRocks cache config '%s': %s", config_path, tostring(open_error))
+            string.format("Could not write LuaRocks cache config '%s': %s", config_path, open_error)
     end
 
     local write_ok, write_error = file:write(table.concat(lines, "\n"))
     if not write_ok then
         file:close()
-        return nil, nil, string.format("Could not write LuaRocks cache config: %s", tostring(write_error))
+        return nil, nil, string.format("Could not write LuaRocks cache config: %s", write_error)
     end
 
-    local close_ok, close_error = file:close()
+    local close_ok, close_reason = file:close()
     if not close_ok then
-        return nil, nil, string.format("Could not close LuaRocks cache config: %s", tostring(close_error))
+        return nil, nil, string.format("Could not close LuaRocks cache config: %s", close_reason)
     end
 
     return config_path, rocks_cache_dir
-end
-
-
---- Interpret the return values of os.execute/io.popen:close across Lua versions.
---- @param first   any
---- @param second  any
---- @param third   any
---- @return boolean
-local function command_succeeded(first, second, third)
-    if first == true or first == 0 then
-        return true
-    end
-
-    return second == "exit" and third == 0
 end
 
 --- Execute a command in the project root.
@@ -355,32 +393,12 @@ local function execute_luarocks(self, arguments)
 
     local command = table.concat(command_parts, " ")
 
-    -- Capture both stdout and stderr instead of printing directly.
-    local handle, open_error = io.popen(command .. " 2>&1", "r")
-
-    if not handle then
-        return false, string.format(
-            "Could not start LuaRocks: %s",
-            tostring(open_error)
-        )
+    local success, run_error = execute_command(command)
+    if not success then
+        return false, string.format("Could not start LuaRocks: %s", run_error)
     end
 
-    local output = handle:read("*a") or ""
-    local first, second, third = handle:close()
-
-    if command_succeeded(first, second, third) then
-        -- Successful LuaRocks output is intentionally suppressed.
-        return true
-    end
-
-    local status = third or second or first
-    output = output:gsub("%s+$", "")
-
-    return false, string.format(
-        "LuaRocks command failed (status: %s):\n%s",
-        tostring(status),
-        output ~= "" and output or command
-    )
+    return true
 end
 
 --- Execute a LuaRocks command and capture its combined output.
@@ -401,20 +419,11 @@ local function capture_luarocks(self, arguments)
     for _, argument in ipairs(arguments) do
         command_parts[#command_parts + 1] = shell_quote(argument)
     end
+    local command = table.concat(command_parts, " ")
 
-    local command = table.concat(command_parts, " ") .. " 2>&1"
-    local handle, open_error = io.popen(command, "r")
-
-    if not handle then
-        return nil, string.format("Could not start LuaRocks: %s", tostring(open_error))
-    end
-
-    local output = handle:read("*a") or ""
-    local first, second, third = handle:close()
-
-    if not command_succeeded(first, second, third) then
-        local status = third or second or first
-        return nil, string.format("LuaRocks command failed (status: %s):\n%s", tostring(status), output)
+    local output, run_error = capture_command(command)
+    if not output then
+        return nil, string.format("Could not start LuaRocks: %s", run_error)
     end
 
     return output
@@ -550,23 +559,23 @@ local function with_native_lockfile(self, contents, callback)
 
     if had_previous then
         local read_error
-        previous_contents, read_error = read_file_contents(lock_path)
+        previous_contents, read_error = read_file(lock_path)
         if previous_contents == nil then
-            return false, string.format("Could not preserve existing '%s': %s", lock_path, tostring(read_error))
+            return false, string.format("Could not preserve existing '%s': %s", lock_path, read_error)
         end
     end
 
     os.remove(temporary_path)
-    local staged, stage_error = write_file_contents(temporary_path, contents)
+    local staged, stage_error = write_file(temporary_path, contents)
     if not staged then
         os.remove(temporary_path)
-        return false, string.format("Could not stage LuaRocks lockfile: %s", tostring(stage_error))
+        return false, string.format("Could not stage LuaRocks lockfile: %s", stage_error)
     end
 
     local moved, move_error = os.rename(temporary_path, lock_path)
     if not moved then
         os.remove(temporary_path)
-        return false, string.format("Could not activate temporary LuaRocks lockfile: %s", tostring(move_error))
+        return false, string.format("Could not activate temporary LuaRocks lockfile: %s", move_error)
     end
 
     local callback_ok, command_ok, command_error = pcall(callback)
@@ -575,7 +584,7 @@ local function with_native_lockfile(self, contents, callback)
     if had_previous then
         local restore_temp = lock_path .. ".artemis-restore-tmp"
         os.remove(restore_temp)
-        restored, restore_error = write_file_contents(restore_temp, previous_contents)
+        restored, restore_error = write_file(restore_temp, previous_contents)
         if restored then
             restored, restore_error = os.rename(restore_temp, lock_path)
         end
@@ -590,10 +599,10 @@ local function with_native_lockfile(self, contents, callback)
     end
 
     if not restored then
-        return false, string.format(
-            "Dependency installation finished, but Artemis could not restore the project's previous 'luarocks.lock': %s",
-            tostring(restore_error)
-        )
+        return false,
+            string.format(
+                "Dependency installation finished, but Artemis could not restore the project's previous 'luarocks.lock': %s",
+                restore_error)
     end
 
     if not callback_ok then
@@ -649,11 +658,9 @@ function DependencyManager:_write_dependency_rockspec()
     lines[#lines + 1] = ""
 
     local directory = join_path(self.root, self.metadata_dir)
-    local mkdir_command = "mkdir -p " .. shell_quote(directory)
-    local mkdir_ok, mkdir_reason, mkdir_code = os.execute(mkdir_command)
-
-    if not command_succeeded(mkdir_ok, mkdir_reason, mkdir_code) then
-        return nil, string.format("Could not create Artemis metadata directory '%s'.", directory)
+    local parent_created, parent_create_error = execute_command("mkdir -p " .. shell_quote(directory))
+    if not parent_created then
+        return nil, string.format("Could not create Artemis metadata directory '%s': %s", directory, parent_create_error)
     end
 
     local relative_path = join_path(self.metadata_dir, ROCKSPEC_FILENAME)
@@ -661,20 +668,20 @@ function DependencyManager:_write_dependency_rockspec()
     local file, open_error = io.open(absolute_path, "wb")
 
     if not file then
-        return nil, string.format("Could not write generated rockspec '%s': %s", absolute_path, tostring(open_error))
+        return nil, string.format("Could not write generated rockspec '%s': %s", absolute_path, open_error)
     end
 
     local write_ok, write_error = file:write(table.concat(lines, "\n"))
     if not write_ok then
         file:close()
         os.remove(absolute_path)
-        return nil, string.format("Could not write generated rockspec '%s': %s", absolute_path, tostring(write_error))
+        return nil, string.format("Could not write generated rockspec '%s': %s", absolute_path, write_error)
     end
 
-    local close_ok, close_error = file:close()
+    local close_ok, close_reason = file:close()
     if not close_ok then
         os.remove(absolute_path)
-        return nil, string.format("Could not close generated rockspec '%s': %s", absolute_path, tostring(close_error))
+        return nil, string.format("Could not close generated rockspec '%s': %s", absolute_path, close_reason)
     end
 
     return relative_path
@@ -701,18 +708,10 @@ function DependencyManager.new(project_root, manifest, options)
     if type(options) ~= "table" then
         return nil, "DependencyManager options must be a table."
     end
-
-    local root_command = io.popen("cd " .. shell_quote(project_root) .. " && pwd", "r")
-    if not root_command then
-        return nil, "Could not resolve project root directory."
+    local root, root_error = absolute_directory(project_root)
+    if not root then
+        return nil, string.format("Could not resolve project root directory: %s", root_error)
     end
-
-    local root = (root_command:read("*l") or ""):gsub("\r$", "")
-    root_command:close()
-    if root == "" then
-        return nil, "Could not resolve project root directory."
-    end
-
 
     local manifest_path = options.manifest_path or manifest.path or "artemis-project.toml"
     if type(manifest_path) ~= "string" or not manifest_path:match("%S") then
@@ -965,10 +964,10 @@ function DependencyManager:add(package_name, version_constraint)
             self.manifest:remove_dependency(package_name)
         end
 
-        return false, string.format(
-            "Dependencies were installed, but the manifest could not be saved. The local tree may now contain the package. %s",
-            tostring(save_error)
-        )
+        return false,
+            string.format(
+                "Dependencies were installed, but the manifest could not be saved. The local tree may now contain the package. %s",
+                save_error)
     end
 
     return true
@@ -1005,11 +1004,10 @@ function DependencyManager:remove(package_name)
 
     local installed_rocks, list_error = self:list_installed()
     if not installed_rocks then
-        return true, string.format(
-            "Removed '%s' from the manifest, but could not check the local tree for an installed copy: %s",
-            package_name,
-            tostring(list_error)
-        )
+        return true,
+            string.format("Removed '%s' from the manifest, but could not check the local tree for an installed copy: %s",
+                package_name, list_error
+            )
     end
 
     local is_installed = false
@@ -1031,11 +1029,10 @@ function DependencyManager:remove(package_name)
     })
 
     if not uninstall_ok then
-        return true, string.format(
-            "Removed '%s' from the manifest, but LuaRocks kept it in the local tree. It may still be required by another installed rock. Details: %s",
-            package_name,
-            tostring(uninstall_error)
-        )
+        return true,
+            string.format(
+                "Removed '%s' from the manifest, but LuaRocks kept it in the local tree. It may still be required by another installed rock. Details: %s",
+                package_name, uninstall_error)
     end
 
     return true
