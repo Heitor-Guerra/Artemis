@@ -38,7 +38,13 @@ describe("artemis.project", function()
 
         function runtime_manager:install(requested_version)
             self.install_calls[#self.install_calls + 1] = requested_version or "<manifest-default>"
-            return true, nil, requested_version or "5.4.9"
+
+            local resolved_version = requested_version or "5.4.9"
+            if resolved_version:match("^%d+%.%d+$") then
+                resolved_version = resolved_version .. ".9"
+            end
+
+            return true, nil, resolved_version
         end
 
         function runtime_manager:get_install_path(version)
@@ -248,6 +254,10 @@ describe("artemis.project", function()
             assert.equals(root .. "/artemis-project.toml", project.manifest_path)
             assert.equals(root .. "/artemis-project.lock", project.lockfile_path)
             assert.is_truthy(project.runtime_manager)
+            assert.equals(root .. "/shared-cache", project.runtime_manager.cache_dir)
+            assert.equals(project.runtime_manager.cache_dir, project.dependency_manager.cache_dir)
+            assert.is_nil(project.runtime_manager.project_root)
+            assert.is_nil(project.runtime_manager.project_runtime_file)
             assert.is_truthy(project.dependency_manager)
             assert.equals("lua_modules", project.dependency_manager:get_tree())
         end)

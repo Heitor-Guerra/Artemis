@@ -10,6 +10,7 @@ local Manifest = require("artemis.manifest")
 local Lockfile = require("artemis.lockfile")
 local Project = require("artemis.project")
 local lfs = require("lfs")
+local RuntimeManager = require("artemis.runtime_manager")
 
 --- @alias Artemis.CLIWriter fun(message: string)
 --- @alias Artemis.CLIProjectFactory fun(root: string, options: Artemis.ProjectOptions): Artemis.Project?, string?
@@ -453,9 +454,80 @@ function CLI.execute(arguments, services)
         return initialize_project(arguments, services)
     end
 
+    if command == "runtime" then
+        local runtime_manager, manager_error = RuntimeManager.new({
+            cache_dir = arguments.cache_dir
+        })
+
+        if not runtime_manager then
+            return fail(services, manager_error)
+        end
+
+        local runtime_command = arguments.runtime_command
+
+        if runtime_command == "install" then
+            if not arguments.lua_version then
+                return fail(services, "A Lua version must be specified.")
+            end
+
+            local installed, install_error, version =
+                runtime_manager:install(arguments.lua_version)
+
+            if not installed then
+                return fail(services, install_error)
+            end
+
+            write_line(
+                services.stdout,
+                string.format("Lua %s is installed.", version),
+                io.stdout
+            )
+
+            return 0
+        end
+
+        if runtime_command == "list" then
+            local versions, list_error = runtime_manager:list_installed()
+
+            if not versions then
+                return fail(services, list_error)
+            end
+
+            if #versions == 0 then
+                write_line(services.stdout, "No Lua runtimes are installed in the shared Artemis cache.", io.stdout)
+                return 0
+            end
+
+            table.sort(versions)
+            write_line(services.stdout, "Cached Lua runtimes:", io.stdout)
+            for _, version in ipairs(versions) do
+                write_line(services.stdout, "  " .. version, io.stdout)
+            end
+
+            return 0
+        end
+
+        if runtime_command == "remove" then
+            local removed, remove_error =
+                runtime_manager:uninstall(arguments.lua_version)
+
+            if not removed then
+                return fail(services, remove_error)
+            end
+
+            write_line(services.stdout,
+                string.format(
+                    "Removed Lua %s from the shared cache. Other projects using this runtime may need to reinstall it.",
+                    arguments.lua_version), io.stdout)
+            return 0
+        end
+
+        return fail(services, "Choose a runtime subcommand: install, list, or remove.")
+    end
+
     if command ~= "sync" and command ~= "add" and command ~= "remove"
         and command ~= "list" and command ~= "ls" and command ~= "tree"
-        and command ~= "run" and command ~= "runtime" then
+        and command ~= "run" then
         return fail(services, "No command was selected. Run 'artemis --help' to see available commands.")
     end
 

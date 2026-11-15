@@ -3,8 +3,6 @@
 
     "runtime.path": [
         "src/?.lua",
-        "lua_modules/share/lua/5.4/?.lua",
-        "lua_modules/share/lua/5.4/?/init.lua"
     ],
 
     "workspace.library": [

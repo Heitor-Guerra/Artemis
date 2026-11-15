@@ -243,9 +243,8 @@ function Project.new(project_root, options)
 
     local runtime_options = copy_options(options.runtime_options)
     runtime_options.cache_dir = options.cache_dir or runtime_options.cache_dir
-    runtime_options.metadata_dir = metadata_dir
 
-    local runtime_manager, runtime_error = RuntimeManager.new(root, manifest, runtime_options)
+    local runtime_manager, runtime_error = RuntimeManager.new(runtime_options)
     if not runtime_manager then
         return nil, runtime_error
     end
@@ -320,6 +319,8 @@ end
 --- @return string?  error_message
 --- @return string?  installed_version
 function Project:install_runtime(requested_version)
+    requested_version = requested_version or self.manifest.data.lua
+
     local installed, install_error, version = self.runtime_manager:install(requested_version)
     if not installed then
         return false, install_error

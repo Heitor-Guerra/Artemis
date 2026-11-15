@@ -64,11 +64,22 @@ describe("Artemis end-to-end project workflows", function()
         return executable, captured_lock, events_file
     end
 
+    local function resolve_fake_runtime_version(requested_version)
+        if not requested_version then
+            return "5.4.9"
+        end
+
+        if requested_version:match("^%d+%.%d+$") then
+            return requested_version .. ".9"
+        end
+
+        return requested_version
+    end
+
     local function make_fake_runtime(project, version, argument_capture, exit_status)
         local runtime_directory = project.runtime_manager.runtimes_dir .. "/" .. version
         local executable = runtime_directory .. "/bin/lua"
         os.execute("mkdir -p " .. helpers.shell_quote(runtime_directory .. "/bin"))
-        os.execute("mkdir -p " .. helpers.shell_quote(project.runtime_manager.metadata_dir))
 
         helpers.write_file(executable, table.concat({
             "#!/bin/sh",
@@ -77,7 +88,6 @@ describe("Artemis end-to-end project workflows", function()
             ""
         }, "\n"))
         helpers.make_executable(executable)
-        helpers.write_file(project.runtime_manager.project_runtime_file, version .. "\n")
         return executable
     end
 
@@ -96,7 +106,7 @@ describe("Artemis end-to-end project workflows", function()
 
         local runtime_capture = root .. "/fake-lua-arguments.txt"
         project.runtime_manager.install = function(runtime_manager, requested_version)
-            local version = requested_version or "5.4.9"
+            local version = resolve_fake_runtime_version(requested_version)
             make_fake_runtime(project, version, runtime_capture, runtime_status)
             return true, nil, version
         end
@@ -117,6 +127,7 @@ describe("Artemis end-to-end project workflows", function()
 
             local generated = assert(Lockfile.load(project.lockfile_path))
             assert.equals("5.4.9", generated.data.project.runtime)
+            assert.is_nil(io.open(project.root .. "/.artemis/runtime-version", "rb"))
             assert.equals("0.7.2-1", generated:get_dependency("argparse").version)
             assert.equals("0.7.1-1", generated:get_dependency("luasystem").version)
             assert.is_true(generated:get_dependency("argparse").direct)
@@ -157,7 +168,7 @@ describe("Artemis end-to-end project workflows", function()
 
             local runtime_capture = root .. "/fake-lua-arguments.txt"
             project.runtime_manager.install = function(runtime_manager, requested_version)
-                local version = requested_version or "5.4.9"
+                local version = resolve_fake_runtime_version(requested_version)
                 make_fake_runtime(project, version, runtime_capture)
                 return true, nil, version
             end
@@ -171,6 +182,46 @@ describe("Artemis end-to-end project workflows", function()
             assert.equals("0.7.1-1", generated:get_dependency("luasystem").version)
             assert.equals("5.4.9", generated.data.project.runtime)
             assert.is_nil(io.open(captured_lock, "rb"))
+        end)
+    end)
+
+    it("shares one global runtime cache across independent projects", function()
+        helpers.with_temp_dir(function(root)
+            local first_root = root .. "/first-project"
+            local second_root = root .. "/second-project"
+            local shared_cache = root .. "/shared-cache"
+            os.execute("mkdir -p " .. helpers.shell_quote(first_root) .. " " .. helpers.shell_quote(second_root))
+
+            local first_luarocks = make_fake_luarocks(first_root)
+            local second_luarocks = make_fake_luarocks(second_root)
+            local first_project, first_error = Project.new(first_root, {
+                manifest = make_manifest(),
+                cache_dir = shared_cache,
+                luarocks = first_luarocks,
+                runtime_options = { sha256sum = "sha256sum" }
+            })
+            assert.is_truthy(first_project, first_error)
+
+            local second_project, second_error = Project.new(second_root, {
+                manifest = make_manifest(),
+                cache_dir = shared_cache,
+                luarocks = second_luarocks,
+                runtime_options = { sha256sum = "sha256sum" }
+            })
+            assert.is_truthy(second_project, second_error)
+            assert.equals(first_project.runtime_manager.cache_dir, second_project.runtime_manager.cache_dir)
+
+            local executable = first_project.runtime_manager.runtimes_dir .. "/5.4.9/bin/lua"
+            os.execute("mkdir -p " .. helpers.shell_quote(executable:match("^(.*)/lua$")))
+            helpers.write_file(executable, "#!/bin/sh\necho Lua 5.4.9\n")
+            helpers.make_executable(executable)
+
+            assert.is_true(second_project.runtime_manager:is_installed("5.4.9"))
+            local removed, remove_error = second_project.runtime_manager:uninstall("5.4.9")
+            assert.is_true(removed, remove_error)
+            assert.is_false(first_project.runtime_manager:is_installed("5.4.9"))
+            assert.is_nil(io.open(first_root .. "/.artemis/runtime-version", "rb"))
+            assert.is_nil(io.open(second_root .. "/.artemis/runtime-version", "rb"))
         end)
     end)
 

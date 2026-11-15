@@ -15,7 +15,6 @@ local lfs = require("lfs")
 
 --- @class Artemis.RuntimeManagerOptions
 --- @field cache_dir?         string  Shared Artemis cache directory. Defaults to $XDG_CACHE_HOME/artemis or ~/.cache/artemis.
---- @field metadata_dir?      string  Project-local metadata directory. Defaults to ".artemis".
 --- @field curl?              string  curl executable. Defaults to "curl".
 --- @field tar?               string  tar executable. Defaults to "tar".
 --- @field make?              string  make executable. Defaults to "make".
@@ -28,14 +27,10 @@ local lfs = require("lfs")
 --- @field archive_url  string  Official source archive URL.
 
 --- @class Artemis.RuntimeManager
---- @field root                  string            Absolute project root directory.
---- @field manifest?             Artemis.Manifest  Manifest containing the project's Lua version.
 --- @field cache_dir             string            Shared Artemis cache directory.
 --- @field downloads_dir         string            Directory containing downloaded Lua source archives.
 --- @field runtimes_dir          string            Directory containing compiled Lua installations.
---- @field project_runtime_file  string            Path to the project-local file recording the selected Lua release.
 --- @field build_dir             string            Temporary source/build directory.
---- @field metadata_dir          string            Project-local Artemis metadata directory.
 --- @field curl                  string            curl executable.
 --- @field tar                   string            tar executable.
 --- @field make                  string            make executable.
@@ -222,11 +217,10 @@ local function absolute_directory(path)
 end
 
 --- Resolve the shared Artemis cache directory.
---- @param project_root          string
 --- @param requested_cache_dir?  string
 --- @return string?  cache_dir
 --- @return string?  error_message
-local function resolve_cache_dir(project_root, requested_cache_dir)
+local function resolve_cache_dir(requested_cache_dir)
     local candidate = requested_cache_dir or os.getenv("ARTEMIS_CACHE_DIR")
 
     if candidate == nil or candidate == "" then
@@ -238,7 +232,7 @@ local function resolve_cache_dir(project_root, requested_cache_dir)
         elseif home and home:match("^/") then
             candidate = join_path(join_path(home, ".cache"), "artemis")
         else
-            candidate = join_path(project_root, ".cache/artemis")
+            return nil, "Could not detect home directory."
         end
     end
 
@@ -255,7 +249,7 @@ local function resolve_cache_dir(project_root, requested_cache_dir)
     elseif candidate:sub(1, 1) == "~" then
         return nil, "Named-user home paths are not supported for the Artemis cache directory."
     elseif not is_absolute_path(candidate) then
-        candidate = join_path(project_root, candidate)
+        return nil, "Could not detect home directory."
     end
 
     candidate = candidate:gsub("/+$", "")
@@ -516,14 +510,13 @@ function RuntimeManager:_resolve_latest_series(series)
 end
 
 --- Resolve a requested series or exact release to an exact version and checksum.
---- @param requested_version?  string  Defaults to the Lua version in the manifest.
+--- @param requested_version  string
 --- @return string?  version
 --- @return string?  checksum
 --- @return string?  error_message
 function RuntimeManager:resolve_version(requested_version)
-    requested_version = requested_version or (self.manifest and self.manifest.data and self.manifest.data.lua)
     if not requested_version then
-        return nil, nil, "No version was requested and there is not a manifest."
+        return nil, nil, "No version was requested."
     end
 
     local series, exact_version, parse_error = parse_requested_version(requested_version)
@@ -742,44 +735,25 @@ function RuntimeManager:_build_and_install(version, archive_path)
     return true
 end
 
---- Create a runtime manager bound to a project and its manifest.
---- @param project_root  string                         Project root directory.
---- @param manifest?     Artemis.Manifest               Manifest instance.
+--- Create a runtime manager.
 --- @param options?      Artemis.RuntimeManagerOptions  Runtime manager configuration.
 --- @return Artemis.RuntimeManager?  manager
 --- @return string?                  error_message
-function RuntimeManager.new(project_root, manifest, options)
-    if type(project_root) ~= "string" or not project_root:match("%S") then
-        return nil, "Project root must be a non-empty string."
-    end
-
-    if manifest and (type(manifest) ~= "table" or type(manifest.data) ~= "table"
-            or type(manifest.data.lua) ~= "string") then
-        return nil, "RuntimeManager.new expects a valid Artemis.Manifest with a Lua version."
-    end
-
+function RuntimeManager.new(options)
     options = options or {}
+
     if type(options) ~= "table" then
         return nil, "RuntimeManager options must be a table."
     end
 
-    local root, root_error = absolute_directory(project_root)
-    if not root then
-        return nil, string.format("Could not resolve project root: %s", root_error)
-    end
 
     if options.cache_dir ~= nil and (type(options.cache_dir) ~= "string" or options.cache_dir == "") then
         return nil, "options.cache_dir must be a non-empty path string."
     end
 
-    local cache_dir, cache_error = resolve_cache_dir(root, options.cache_dir)
+    local cache_dir, cache_error = resolve_cache_dir(options.cache_dir)
     if not cache_dir then
         return nil, cache_error
-    end
-
-    local metadata_dir = options.metadata_dir or ".artemis"
-    if type(metadata_dir) ~= "string" or not metadata_dir:match("%S") or is_absolute_path(metadata_dir) then
-        return nil, "Project metadata directory must be a non-empty relative path."
     end
 
     local curl = options.curl or "curl"
@@ -798,14 +772,10 @@ function RuntimeManager.new(project_root, manifest, options)
     end
 
     local self = setmetatable({}, RuntimeManager)
-    self.root = root
-    self.manifest = manifest
     self.cache_dir = cache_dir
     self.downloads_dir = join_path(cache_dir, "downloads/lua")
     self.runtimes_dir = join_path(cache_dir, "runtimes/lua")
     self.build_dir = join_path(cache_dir, "build")
-    self.metadata_dir = join_path(root, metadata_dir)
-    self.project_runtime_file = join_path(self.metadata_dir, "runtime-version")
     self.curl = curl
     self.tar = tar
     self.make = make
@@ -815,17 +785,16 @@ function RuntimeManager.new(project_root, manifest, options)
     return self
 end
 
---- Install the Lua version declared in the manifest or the explicitly requested version.
+--- Install the Lua version explicitly requested.
 --- A major.minor request selects the latest official patch release in that series.
 --- The resulting installation is shared by every Artemis project using this cache.
---- @param requested_version?  string  Defaults to manifest.data.lua.
+--- @param requested_version  string
 --- @return boolean  success
 --- @return string?  error_message
 --- @return string?  installed_version Exact installed version, when successful.
 function RuntimeManager:install(requested_version)
-    requested_version = requested_version or (self.manifest and self.manifest.data.lua)
     if not requested_version then
-        return false, "No version was requested and there is not a manifest."
+        return false, "No version was requested"
     end
 
     local series, exact_version, parse_error = parse_requested_version(requested_version)
@@ -834,10 +803,6 @@ function RuntimeManager:install(requested_version)
     end
 
     if exact_version and self:is_installed(exact_version) then
-        local marked, mark_error = write_file(self.project_runtime_file, exact_version .. "\n")
-        if not marked then
-            return false, mark_error
-        end
         return true, nil, exact_version
     end
 
@@ -855,11 +820,6 @@ function RuntimeManager:install(requested_version)
             if not mapping_saved then
                 return false, mapping_error
             end
-        end
-
-        local marked, mark_error = write_file(self.project_runtime_file, version .. "\n")
-        if not marked then
-            return false, mark_error
         end
 
         return true, nil, version
@@ -903,25 +863,17 @@ function RuntimeManager:install(requested_version)
         end
     end
 
-    local marked, mark_error = write_file(self.project_runtime_file, version .. "\n")
-    if not marked then
-        return false,
-            string.format("Lua %s was installed, but the project's runtime selection could not be saved: %s", version,
-                mark_error)
-    end
-
     return true, nil, version
 end
 
 --- Check whether an exact release or a cached release series is installed.
 --- This check is offline and never downloads or builds anything.
---- @param requested_version?  string  Defaults to manifest.data.lua.
+--- @param requested_version  string
 --- @return boolean?  installed
 --- @return string?   error_message
 function RuntimeManager:is_installed(requested_version)
-    requested_version = requested_version or (self.manifest and self.manifest.data.lua)
     if not requested_version then
-        return false, "No version was requested and there is not a manifest."
+        return false, "No version was requested."
     end
 
     local series, exact_version, parse_error = parse_requested_version(requested_version)
@@ -946,14 +898,12 @@ function RuntimeManager:is_installed(requested_version)
 end
 
 --- Return the exact cached installation path for a requested release.
---- @param requested_version?  string  Defaults to manifest.data.lua.
+--- @param requested_version  string
 --- @return string?  installation_path
 --- @return string?  error_message
 function RuntimeManager:get_install_path(requested_version)
-    if requested_version == nil then
-        local selected_version = read_file(self.project_runtime_file)
-        selected_version = selected_version and selected_version:match("^%s*([%d%.]+)") or nil
-        requested_version = selected_version or (self.manifest and self.manifest.data.lua)
+    if not requested_version then
+        return nil, "No version was requested."
     end
 
     local series, exact_version, parse_error = parse_requested_version(requested_version)
@@ -983,10 +933,14 @@ function RuntimeManager:get_install_path(requested_version)
 end
 
 --- Return the Lua interpreter executable for a requested release.
---- @param requested_version?  string  Defaults to manifest.data.lua.
+--- @param requested_version  string
 --- @return string?  executable_path
 --- @return string?  error_message
 function RuntimeManager:get_executable(requested_version)
+    if not requested_version then
+        return nil, "A Lua version must be specified."
+    end
+
     local installation_path, path_error = self:get_install_path(requested_version)
     if not installation_path then
         return nil, path_error
@@ -1061,6 +1015,10 @@ end
 --- @return boolean  success
 --- @return string?  error_message
 function RuntimeManager:uninstall(requested_version)
+    if not requested_version then
+        return false, "A Lua version must be specified."
+    end
+
     local series, exact_version, parse_error = parse_requested_version(requested_version)
     if not series then
         return false, parse_error
@@ -1093,11 +1051,6 @@ function RuntimeManager:uninstall(requested_version)
     local cached_series_version = read_file(series_mapping_path)
     if not exact_version or (cached_series_version and cached_series_version:match("^%s*([%d%.]+)") == version) then
         os.remove(series_mapping_path)
-    end
-
-    local selected_version = read_file(self.project_runtime_file)
-    if selected_version and selected_version:match("^%s*([%d%.]+)") == version then
-        os.remove(self.project_runtime_file)
     end
 
     return true

@@ -1,5 +1,6 @@
 --- @diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil, duplicate-set-field
 local CLI = require("artemis.cli")
+local RuntimeManager = require("artemis.runtime_manager")
 local Manifest = require("artemis.manifest")
 local helpers = require("spec.helpers")
 local lfs = require("lfs")
@@ -236,6 +237,19 @@ describe("artemis.cli parser", function()
         assert.equals("5.4.9", arguments.lua_version)
     end)
 
+    it("parses global runtime listing and removal commands", function()
+        local parsed_ok, arguments = CLI.build_parser():pparse({ "runtime", "list" })
+        assert.is_true(parsed_ok)
+        assert.equals("runtime", arguments.command)
+        assert.equals("list", arguments.runtime_command)
+
+        parsed_ok, arguments = CLI.build_parser():pparse({ "runtime", "remove", "5.4.9" })
+        assert.is_true(parsed_ok)
+        assert.equals("runtime", arguments.command)
+        assert.equals("remove", arguments.runtime_command)
+        assert.equals("5.4.9", arguments.lua_version)
+    end)
+
 
     it("accepts the ls alias for the installed-rock listing", function()
         local parsed_ok, arguments = CLI.build_parser():pparse({ "ls" })
@@ -429,41 +443,6 @@ describe("artemis.cli command dispatch", function()
         assert.equals(0, #project.run_calls)
     end)
 
-    it("installs the manifest Lua runtime by default", function()
-        local project = make_project()
-        local services, output = make_services(project)
-        local exit_code = CLI.execute({ command = "runtime", runtime_command = "install" }, services)
-
-        assert.equals(0, exit_code)
-        assert.is_nil(project.last_installed_runtime)
-        assert.matches("Lua 5%.4%.9 is installed", output[1])
-    end)
-
-    it("lists runtimes stored in the shared cache", function()
-        local project = make_project()
-        local services, output = make_services(project)
-        local exit_code = CLI.execute({ command = "runtime", runtime_command = "list" }, services)
-
-        assert.equals(0, exit_code)
-        assert.equals("Cached Lua runtimes:", output[1])
-        assert.equals("  5.3.6", output[2])
-        assert.equals("  5.4.9", output[3])
-    end)
-
-    it("removes a selected cached runtime", function()
-        local project = make_project()
-        local services, output = make_services(project)
-        local exit_code = CLI.execute({
-            command = "runtime",
-            runtime_command = "remove",
-            lua_version = "5.3.6"
-        }, services)
-
-        assert.equals(0, exit_code)
-        assert.equals("5.3.6", project.last_uninstalled_runtime)
-        assert.matches("shared cache", output[1])
-    end)
-
     it("returns a nonzero status when the project cannot be opened", function()
         local stdout, output = capture_writer()
         local stderr, errors = capture_writer()
@@ -555,14 +534,27 @@ describe("artemis.cli failure handling", function()
         assert.matches("script exited with status 2", errors[1])
     end)
 
-    it("reports runtime installation failures", function()
-        local project = make_project({
-            runtime_install_result = false,
-            runtime_install_error = "could not compile Lua"
-        })
-        local services, output, errors = make_services(project)
-        local exit_code = CLI.execute({ command = "runtime", runtime_command = "install" }, services)
+    it("reports global runtime installation failures", function()
+        local manager = {}
+        function manager:install(version)
+            assert.equals("5.4.9", version)
+            return false, "could not compile Lua"
+        end
 
+        local original_new = RuntimeManager.new
+        RuntimeManager.new = function()
+            return manager
+        end
+
+        local stdout, output = capture_writer()
+        local stderr, errors = capture_writer()
+        local exit_code = CLI.execute({
+            command = "runtime",
+            runtime_command = "install",
+            lua_version = "5.4.9"
+        }, { stdout = stdout, stderr = stderr })
+
+        RuntimeManager.new = original_new
         assert.equals(1, exit_code)
         assert.equals(0, #output)
         assert.matches("could not compile Lua", errors[1])
@@ -587,6 +579,205 @@ describe("artemis.cli failure handling", function()
         assert.equals(0, exit_code)
         assert.equals("artemis " .. CLI.VERSION, output[1])
         assert.equals(0, #errors)
+    end)
+end)
+
+
+
+describe("artemis.cli global runtime commands", function()
+    local function with_runtime_manager(manager, callback)
+        local original_new = RuntimeManager.new
+        local received_options
+        RuntimeManager.new = function(options)
+            received_options = options
+            return manager
+        end
+
+        local results = { pcall(callback) }
+        RuntimeManager.new = original_new
+        if not results[1] then
+            error(results[2], 0)
+        end
+        table.remove(results, 1)
+        return received_options, table.unpack(results)
+    end
+
+    local function no_project_services()
+        local stdout, output = capture_writer()
+        local stderr, errors = capture_writer()
+        return {
+            stdout = stdout,
+            stderr = stderr,
+            project_factory = function()
+                error("global runtime commands must not construct a Project")
+            end
+        }, output, errors
+    end
+
+    it("lists cached runtimes outside a project and forwards the global cache option", function()
+        helpers.with_temp_dir(function(root)
+            local outside_project = root .. "/not-a-project"
+            make_directory(outside_project)
+            local manager = {}
+            function manager:list_installed()
+                return { "5.3.6", "5.4.9" }
+            end
+
+            local services, output, errors = no_project_services()
+            with_current_directory(outside_project, function()
+                local options = with_runtime_manager(manager, function()
+                    local exit_code = CLI.main({
+                        "--cache-dir", root .. "/global-cache",
+                        "runtime", "list"
+                    }, services)
+                    assert.equals(0, exit_code)
+                end)
+                assert.equals(root .. "/global-cache", options.cache_dir)
+            end)
+
+            assert.same({ "Cached Lua runtimes:", "  5.3.6", "  5.4.9" }, output)
+            assert.equals(0, #errors)
+        end)
+    end)
+
+    it("installs a specified release globally without opening a project", function()
+        local manager = {}
+        function manager:install(version)
+            assert.equals("5.4.9", version)
+            return true, nil, "5.4.9"
+        end
+
+        local services, output, errors = no_project_services()
+        local options = with_runtime_manager(manager, function()
+            local exit_code = CLI.execute({
+                command = "runtime",
+                runtime_command = "install",
+                lua_version = "5.4.9",
+                cache_dir = "/tmp/artemis-global-cache"
+            }, services)
+            assert.equals(0, exit_code)
+        end)
+
+        assert.equals("/tmp/artemis-global-cache", options.cache_dir)
+        assert.same({ "Lua 5.4.9 is installed." }, output)
+        assert.equals(0, #errors)
+    end)
+
+    it("requires an explicit Lua version for global installation", function()
+        local manager = {}
+        function manager:install()
+            error("install must not be called without a requested version")
+        end
+
+        local services, output, errors = no_project_services()
+        with_runtime_manager(manager, function()
+            local exit_code = CLI.execute({
+                command = "runtime",
+                runtime_command = "install"
+            }, services)
+            assert.equals(1, exit_code)
+        end)
+
+        assert.equals(0, #output)
+        assert.matches("A Lua version must be specified", errors[1])
+    end)
+
+    it("removes a globally installed runtime without opening a project", function()
+        local manager = {}
+        function manager:uninstall(version)
+            assert.equals("5.4.9", version)
+            return true
+        end
+
+        local services, output, errors = no_project_services()
+        with_runtime_manager(manager, function()
+            local exit_code = CLI.execute({
+                command = "runtime",
+                runtime_command = "remove",
+                lua_version = "5.4.9"
+            }, services)
+            assert.equals(0, exit_code)
+        end)
+
+        assert.equals(1, #output)
+        assert.matches("Removed Lua 5%.4%.9 from the shared cache", output[1])
+        assert.equals(0, #errors)
+    end)
+
+    it("reports a global list failure without attempting project discovery", function()
+        local manager = {}
+        function manager:list_installed()
+            return nil, "runtime cache is unreadable"
+        end
+
+        local services, output, errors = no_project_services()
+        with_runtime_manager(manager, function()
+            local exit_code = CLI.execute({
+                command = "runtime",
+                runtime_command = "list"
+            }, services)
+            assert.equals(1, exit_code)
+        end)
+
+        assert.equals(0, #output)
+        assert.matches("runtime cache is unreadable", errors[1])
+    end)
+
+    it("reports an empty global runtime cache", function()
+        local manager = {}
+        function manager:list_installed()
+            return {}
+        end
+
+        local services, output, errors = no_project_services()
+        with_runtime_manager(manager, function()
+            local exit_code = CLI.execute({
+                command = "runtime",
+                runtime_command = "list"
+            }, services)
+            assert.equals(0, exit_code)
+        end)
+
+        assert.same({ "No Lua runtimes are installed in the shared Artemis cache." }, output)
+        assert.equals(0, #errors)
+    end)
+
+    it("reports a global cache initialization failure before project discovery", function()
+        local original_new = RuntimeManager.new
+        RuntimeManager.new = function()
+            return nil, "could not initialize global runtime cache"
+        end
+
+        local services, output, errors = no_project_services()
+        local exit_code = CLI.execute({
+            command = "runtime",
+            runtime_command = "list"
+        }, services)
+        RuntimeManager.new = original_new
+
+        assert.equals(1, exit_code)
+        assert.equals(0, #output)
+        assert.matches("could not initialize global runtime cache", errors[1])
+    end)
+
+    it("reports a global uninstall failure", function()
+        local manager = {}
+        function manager:uninstall()
+            return false, "Lua 5.4.9 is not installed."
+        end
+
+        local services, output, errors = no_project_services()
+        with_runtime_manager(manager, function()
+            local exit_code = CLI.execute({
+                command = "runtime",
+                runtime_command = "remove",
+                lua_version = "5.4.9"
+            }, services)
+            assert.equals(1, exit_code)
+        end)
+
+        assert.equals(0, #output)
+        assert.matches("Lua 5%.4%.9 is not installed", errors[1])
     end)
 end)
 
