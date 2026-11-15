@@ -46,6 +46,66 @@ RuntimeManager.__index = RuntimeManager
 --- @type string
 RuntimeManager.DEFAULT_SOURCE_URL = "https://www.lua.org/ftp/"
 
+RuntimeManager.VERSIONS_CHECKSUM = {
+    ["5.5.1"] = "1c4b4068d67061f2a2231ad2b5422e77acea1487ea9890f6320af614f4373dce",
+    ["5.5.0"] = "57ccc32bbbd005cab75bcc52444052535af691789dba2b9016d5c50640d68b3d",
+
+    ["5.4.9"] = "2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6",
+    ["5.4.8"] = "4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae",
+    ["5.4.7"] = "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30",
+    ["5.4.6"] = "7d5ea1b9cb6aa0b59ca3dde1c6adcb57ef83a1ba8e5432c0ecd06bf439b3ad88",
+    ["5.4.5"] = "59df426a3d50ea535a460a452315c4c0d4e1121ba72ff0bdde58c2ef31d6f444",
+    ["5.4.4"] = "164c7849653b80ae67bec4b7473b884bf5cc8d2dca05653475ec2ed27b9ebf61",
+    ["5.4.3"] = "f8612276169e3bfcbcfb8f226195bfc6e466fe13042f1076cbde92b7ec96bbfb",
+    ["5.4.2"] = "11570d97e9d7303c0a59567ed1ac7c648340cd0db10d5fd594c09223ef2f524f",
+    ["5.4.1"] = "4ba786c3705eb9db6567af29c91a01b81f1c0ac3124fdbf6cd94bdd9e53cca7d",
+    ["5.4.0"] = "eac0836eb7219e421a96b7ee3692b93f0629e4cdb0c788432e3d10ce9ed47e28",
+
+    ["5.3.6"] = "fc5fd69bb8736323f026672b1b7235da613d7177e72558893a0bdcd320466d60",
+    ["5.3.5"] = "0c2eed3f960446e1a3e4b9a1ca2f3ff893b6ce41942cf54d5dd59ab4b3b058ac",
+    ["5.3.4"] = "f681aa518233bc407e23acf0f5887c884f17436f000d453b2491a9f11a52400c",
+    ["5.3.3"] = "5113c06884f7de453ce57702abaac1d618307f33f6789fa870e87a59d772aca2",
+    ["5.3.2"] = "c740c7bb23a936944e1cc63b7c3c5351a8976d7867c5252c8854f7b2af9da68f",
+    ["5.3.1"] = "072767aad6cc2e62044a66e8562f51770d941e972dc1e4068ba719cd8bffac17",
+    ["5.3.0"] = "ae4a5eb2d660515eb191bfe3e061f2b8ffe94dce73d32cfd0de090ddcc0ddb01",
+
+    ["5.2.4"] = "b9e2e4aad6789b3b63a056d442f7b39f0ecfca3ae0f1fc0ae4e9614401b69f4b",
+    ["5.2.3"] = "13c2fb97961381f7d06d5b5cea55b743c163800896fd5c5e2356201d3619002d",
+    ["5.2.2"] = "3fd67de3f5ed133bf312906082fa524545c6b9e1b952e8215ffbd27113f49f00",
+    ["5.2.1"] = "64304da87976133196f9e4c15250b70f444467b6ed80d7cfd7b3b982b5177be5",
+    ["5.2.0"] = "cabe379465aa8e388988073d59b69e76ba0025429d2c1da80821a252cdf6be0d",
+
+    ["5.1.5"] = "2640fc56a795f29d28ef15e13c34a47e223960b0240e8cb0a82d9b0738695333",
+    ["5.1.4"] = "b038e225eaf2a5b57c9bcc35cd13aa8c6c8288ef493d52970c9545074098af3a",
+    ["5.1.3"] = "6b5df2edaa5e02bf1a2d85e1442b2e329493b30b0c0780f77199d24f087d296d",
+    ["5.1.2"] = "5cf098c6fe68d3d2d9221904f1017ff0286e4a9cc166a1452a456df9b88b3d9e",
+    ["5.1.1"] = "c5daeed0a75d8e4dd2328b7c7a69888247868154acbda69110e97d4a6e17d1f0",
+    ["5.1"] = "7f5bb9061eb3b9ba1e406a5aa68001a66cb82bac95748839dc02dd10048472c1",
+
+    ["5.0.3"] = "1193a61b0e08acaa6eee0eecf29709179ee49c71baebc59b682a25c3b5a45671",
+    ["5.0.2"] = "a6c85d85f912e1c321723084389d63dee7660b81b8292452b190ea7190dd73bc",
+    ["5.0.1"] = "7a09d0e70dcaff7feae97cf9c154da05b1e5b92eaea2df7150b54bcaf8f3b9c6",
+    ["5.0"] = "4a23b3bcb812538c653033cd39fe9c9bd8030286b945c56eff280d452e4e244e",
+
+    ["4.0.1"] = "df746e149cf6939e90009d2e540eee918d585b4d1bc6d68b19316a050d484d2a",
+    ["4.0"] = "b476abc737bf82781cb215e59a259bf23adbdc82425907b51f37ba29c0e71337",
+
+    ["3.2.2"] = "4e04059f43acdcde5f7fd491c731df9279dac87d288a08c6eaeb31760c9876e0",
+    ["3.2.1"] = "00d156f5b0c99bf46ed2fc2471b2a4bc5762aee83a809ab87bd7ec9ccc6220ea",
+    ["3.2"] = "bf8beabd41e65cbf8cb41c688eca0588fff81e1e5f67cb42bd370e1ecc585c33",
+
+    ["3.1"] = "797ceabe28df53ce6dd6bfb4397d6e0b2e349b3bd0a1883c9c8ae0212d8cd7ed",
+    ["3.0"] = "a3ae0fb0ffc6b365d187fea0d121772fc2a8810853b14b7e48ed31eae8494215",
+
+    ["2.5"] = "8ba8cc089b6ee7b5ed7fe9e0764756838943a1e52dde8bbfa70b758556056cd5",
+    ["2.4"] = "38ee28cd5ec5c0b75f31d65c12f587f192174c8b7fcca3decd08cdb35af282e3",
+    ["2.2"] = "a13cc27035b8d16bd9d29f5a1eb4403476deecd149c1d3979ad9d2ad015994f3",
+    ["2.1"] = "d65ee99f8e63d12fa952425671854add39c1233e4a9c6669ec552b16279df664",
+
+    ["1.1"] = "e44506793fee609202d7f42e529afbc3c9a541e0fc715b3834d758f0ae41c38f",
+    ["1.0"] = "d8ee432490a4679a4edb0abbef2d3b7b0f1fc29a39398988c4bb5eeb8d2180a6",
+}
+
 ------------------------------------ Local Functions ------------------------------------
 
 --- Resolve the shared Artemis cache directory.
@@ -109,7 +169,7 @@ end
 
 --- Parse a requested Lua version.
 --- A series such as "5.4" floats to the latest patch release; an exact version
---- such as "5.4.9" remains pinned to that release.
+--- such as "5.4.0" remains pinned to that release.
 --- @param requested_version  string
 --- @return string?  series
 --- @return string?  exact_version
@@ -139,205 +199,11 @@ local function parse_requested_version(requested_version)
     )
 end
 
---- Return the checksum token in an HTML table row.
---- @param row  string
---- @return string?  checksum
-local function checksum_from_row(row)
-    for token in row:gmatch("([%da-fA-F]+)") do
-        if #token == 64 then
-            return token:lower()
-        end
-    end
-
-    return nil
-end
-
---- Find a release entry and its SHA-256 checksum in the official download index.
---- The Lua download page is HTML, but this parser deliberately does not depend
---- on lowercase table tags or on the filename appearing only once per row.
---- @param html     string
---- @param version  string
---- @return string?  checksum
-local function find_release_checksum(html, version)
-    local filename = "lua-" .. version .. ".tar.gz"
-    local lower_html = html:lower()
-    local search_position = 1
-
-    while true do
-        local filename_start, filename_end = lower_html:find(filename, search_position, true)
-        if not filename_start then
-            return nil
-        end
-
-        -- Include the complete table row when one is present. Some pages or
-        -- mirrors may omit table rows, so fall back to the next release entry.
-        local row_start = filename_start
-        for position in lower_html:gmatch("()<tr") do
-            if position > filename_start then
-                break
-            end
-            ---@diagnostic disable-next-line: cast-local-type
-            row_start = position
-        end
-
-        local row_end = lower_html:find("</tr>", filename_end, true)
-        local next_filename_start = lower_html:find(
-            "lua%-[%d]+%.%d+%.%d+%.tar%.gz",
-            filename_end + 1
-        )
-
-        if next_filename_start and (not row_end or next_filename_start < row_end) then
-            row_end = next_filename_start - 1
-        end
-
-        if not row_end then
-            row_end = math.min(#html, filename_end + 2048)
-        end
-
-        ---@diagnostic disable-next-line: param-type-mismatch
-        local row = html:sub(row_start, row_end)
-        local checksum = checksum_from_row(row)
-        if checksum then
-            return checksum
-        end
-
-        -- An anchor may contain the filename both in href and link text. Try
-        -- the next occurrence before giving up on this release entry.
-        search_position = filename_end + 1
-    end
-end
-
 -----------------------------------------------------------------------------------------
 
 
 
 ----------------------------------- Manager Functions -----------------------------------
-
---- Fetch the official Lua download index.
---- @return string?  html
---- @return string?  error_message
-function RuntimeManager:_fetch_release_index()
-    return self.downloader.get(self.source_url .. "index.html", { attempts = 3 })
-end
-
---- Retrieve the official checksum for an exact Lua release.
---- @param version  string
---- @return string?  checksum
---- @return string?  error_message
-function RuntimeManager:_get_release_checksum(version)
-    local checksum_path = Path.join(self.downloads_dir, "lua-" .. version .. ".sha256")
-    local cached_checksum = FileSystem.read_file(checksum_path)
-
-    if cached_checksum then
-        local checksum = cached_checksum:match("^%s*([%da-fA-F]+)")
-        if checksum and #checksum == 64 then
-            return checksum:lower()
-        end
-    end
-
-    local html, index_error = self:_fetch_release_index()
-    if not html then
-        return nil,
-            string.format("Could not retrieve the official Lua release index to verify Lua %s: %s", version, index_error)
-    end
-
-    local checksum = find_release_checksum(html, version)
-    if not checksum then
-        return nil,
-            string.format(
-                "Lua %s was not found in the official download index, or its SHA-256 checksum could not be parsed.",
-                version)
-    end
-
-    local saved, save_error = FileSystem.write_file(checksum_path, checksum .. "\n")
-    if not saved then
-        return nil, save_error
-    end
-
-    return checksum
-end
-
---- Resolve a series (for example, 5.4) to the newest official patch release.
---- @param series  string
---- @return string?  version
---- @return string?  checksum
---- @return string?  error_message
-function RuntimeManager:_resolve_latest_series(series)
-    local mapping_path = Path.join(self.cache_dir, "metadata/lua-series-" .. series .. ".txt")
-    local mapped_version = FileSystem.read_file(mapping_path)
-    if mapped_version then
-        mapped_version = mapped_version:match("^%s*([%d%.]+)")
-        if mapped_version then
-            local mapped_series = mapped_version:match("^(%d+%.%d+)")
-            if mapped_series == series then
-                -- A completed installation needs no network lookup or checksum.
-                if self:is_installed(mapped_version) then
-                    local checksum = FileSystem.read_file(Path.join(self.downloads_dir,
-                        "lua-" .. mapped_version .. ".sha256"))
-                    checksum = checksum and checksum:match("^%s*([%da-fA-F]+)") or nil
-                    return mapped_version, checksum
-                end
-
-                local checksum, checksum_error = self:_get_release_checksum(mapped_version)
-                if checksum then
-                    return mapped_version, checksum
-                end
-
-                if checksum_error then
-                    return nil, nil, checksum_error
-                end
-            end
-        end
-    end
-
-    local html, index_error = self:_fetch_release_index()
-    if not html then
-        return nil, nil,
-            string.format("Could not resolve Lua %s without the official release index: %s", series, index_error)
-    end
-
-    local latest_version
-    --- @type number?
-    local latest_patch = -1
-    local latest_checksum
-    local seen_versions = {}
-
-    -- Search for release filenames across the whole document instead of
-    -- depending on a particular <tr> layout. The official index may change its
-    -- surrounding HTML without changing the release filenames/checksums.
-    for version in html:lower():gmatch("lua%-(%d+%.%d+%.%d+)%.tar%.gz") do
-        if not seen_versions[version] then
-            seen_versions[version] = true
-            local row_series, patch = version:match("^(%d+%.%d+)%.(%d+)$")
-            patch = tonumber(patch)
-
-            if row_series == series and patch and patch > latest_patch then
-                latest_version = version
-                latest_patch = patch
-                latest_checksum = find_release_checksum(html, version)
-            end
-        end
-    end
-
-    if not latest_version then
-        return nil, nil, string.format(
-            "No released Lua versions matching series %s were found at %s. "
-            .. "The download index was retrieved, but no matching release filename was recognized.",
-            series,
-            self.source_url
-        )
-    end
-
-    if not latest_checksum then
-        return nil, nil, string.format(
-            "Lua %s appears in the official download index, but Artemis could not parse its SHA-256 checksum from %s.",
-            latest_version,
-            self.source_url
-        )
-    end
-
-    return latest_version, latest_checksum
-end
 
 --- Resolve a requested series or exact release to an exact version and checksum.
 --- @param requested_version  string
@@ -354,24 +220,17 @@ function RuntimeManager:resolve_version(requested_version)
         return nil, nil, parse_error
     end
 
-    if exact_version then
-        local checksum, checksum_error = self:_get_release_checksum(exact_version)
-        if not checksum then
-            return nil, nil, checksum_error
-        end
-
-        return exact_version, checksum
+    if not exact_version and not self.VERSIONS_CHECKSUM[series] then
+        exact_version = series .. ".0"
+    elseif not exact_version and self.VERSIONS_CHECKSUM[series] then
+        exact_version = series
     end
 
-    return self:_resolve_latest_series(series)
-end
+    if not self.VERSIONS_CHECKSUM[exact_version] then
+        return nil, nil, "Could not resolve the requested_version."
+    end
 
---- Verify a cached archive with the shared OpenSSL-backed checksum module.
---- @param archive_path  string
---- @return string?  actual_checksum
---- @return string?  error_message
-function RuntimeManager:_sha256(archive_path)
-    return self.checksum.sha256_file(archive_path)
+    return exact_version, self.VERSIONS_CHECKSUM[exact_version]
 end
 
 --- Download a source archive once, verify it, and retain it in the shared cache.
@@ -384,7 +243,7 @@ function RuntimeManager:_ensure_archive(version, expected_checksum)
     local archive_path = Path.join(self.downloads_dir, archive_name)
 
     if FileSystem.file_exists(archive_path) then
-        local actual_checksum, checksum_error = self:_sha256(archive_path)
+        local actual_checksum, checksum_error = self.checksum.sha256_file(archive_path)
         if not actual_checksum then
             return nil, checksum_error
         end
@@ -413,7 +272,7 @@ function RuntimeManager:_ensure_archive(version, expected_checksum)
         return nil, string.format("Could not download Lua %s: %s", version, download_error)
     end
 
-    local actual_checksum, checksum_error = self:_sha256(temporary_path)
+    local actual_checksum, checksum_error = self.checksum.sha256_file(temporary_path)
     if not actual_checksum then
         FileSystem.remove(temporary_path)
         return nil, checksum_error
@@ -433,14 +292,6 @@ function RuntimeManager:_ensure_archive(version, expected_checksum)
     if not moved then
         FileSystem.remove(temporary_path)
         return nil, string.format("Could not move the verified archive into the cache: %s", move_error)
-    end
-
-    local checksum_saved, save_error = FileSystem.write_file(
-        Path.join(self.downloads_dir, "lua-" .. version .. ".sha256"),
-        expected_checksum .. "\n"
-    )
-    if not checksum_saved then
-        return nil, save_error
     end
 
     return archive_path
@@ -610,7 +461,7 @@ function RuntimeManager:install(requested_version)
     end
 
     local version, checksum, resolve_error = self:resolve_version(requested_version)
-    if not version then
+    if not version or not checksum then
         return false, resolve_error
     end
 
@@ -637,13 +488,6 @@ function RuntimeManager:install(requested_version)
     end
     if not dirs_created then
         return false, string.format("Could not create Artemis cache directories: %s", dirs_error)
-    end
-
-    if not checksum then
-        checksum, resolve_error = self:_get_release_checksum(version)
-        if not checksum then
-            return false, resolve_error
-        end
     end
 
     local archive_path, archive_error = self:_ensure_archive(version, checksum)
@@ -859,19 +703,7 @@ function RuntimeManager:uninstall(requested_version)
     return true
 end
 
---- Alias for list_installed(), using concise list terminology.
---- @return string[]  versions
---- @return string?   error_message
-function RuntimeManager:list()
-    return self:list_installed()
-end
+-----------------------------------------------------------------------------------------
 
---- Alias for is_installed(), using the earlier API name from the initial sketch.
---- @param requested_version?  string
---- @return boolean?  installed
---- @return string?   error_message
-function RuntimeManager:verify_existent(requested_version)
-    return self:is_installed(requested_version)
-end
 
 return RuntimeManager
