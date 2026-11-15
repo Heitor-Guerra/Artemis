@@ -72,6 +72,86 @@ local function project_path(root, path)
     return Path.join(root, path)
 end
 
+local function create_dependency(name, constraint)
+    if type(name) ~= "string" or not name:match("%S") then
+        return nil, "Dependency name must be a non-empty string."
+    end
+
+    if not name:match("^[%w][%w_.%-]*$") then
+        return nil, string.format("Invalid LuaRocks package name: %s", name)
+    end
+
+    if constraint == nil then
+        constraint = "*"
+    end
+    if type(constraint) ~= "string" or not constraint:match("%S") then
+        return nil, "Dependency version constraint must be a non-empty string."
+    end
+
+    if constraint:find("[\r\n]") then
+        return nil, "Dependency version constraint cannot contain line breaks."
+    end
+
+    return { name = name, constraint = constraint }
+end
+
+--- Convert a name-to-constraint map into Dependency values.
+--- @param declarations  table<string, string>
+--- @return Artemis.Dependency[]?  dependencies
+--- @return string?                error_message
+local function make_dependencies(declarations)
+    local names = {}
+    for name in pairs(declarations) do
+        names[#names + 1] = name
+    end
+    table.sort(names)
+
+    local dependencies = {}
+    for _, name in ipairs(names) do
+        dependencies[#dependencies + 1] = create_dependency(name, declarations[name])
+    end
+
+    return dependencies
+end
+
+--- Build direct dependencies from the current manifest declarations.
+--- @param manifest  Artemis.Manifest
+--- @return Artemis.Dependency[]?  dependencies
+--- @return string?                error_message
+local function dependencies_from_manifest(manifest)
+    return make_dependencies(manifest:get_dependencies())
+end
+
+--- Build direct dependencies and exact package versions from a lockfile.
+--- Project performs this translation so DependencyManager never needs to know
+--- the lockfile's schema or record structure.
+--- @param lockfile  Artemis.Lockfile
+--- @return Artemis.Dependency[]?  dependencies
+--- @return table<string, string>? exact_versions
+--- @return string?                error_message
+local function dependencies_from_lockfile(lockfile)
+    local locked_records = lockfile:get_dependencies()
+    local declarations = {}
+    local exact_versions = {}
+
+    for name, record in pairs(locked_records) do
+        exact_versions[name] = record.version
+        if record.direct then
+            if type(record.constraint) ~= "string" or not record.constraint:match("%S") then
+                return nil, nil, string.format("Direct dependency '%s' has no version constraint in the lockfile.", name)
+            end
+            declarations[name] = record.constraint
+        end
+    end
+
+    local dependencies, dependency_error = make_dependencies(declarations)
+    if not dependencies then
+        return nil, nil, dependency_error
+    end
+
+    return dependencies, exact_versions
+end
+
 -----------------------------------------------------------------------------------------
 
 
@@ -79,9 +159,9 @@ end
 ----------------------------------- Project Functions -----------------------------------
 
 --- Create a Project and load its manifest.
---- The constructor does not download or compile a runtime. It creates the two
---- managers and reuses a cached runtime when one is already available. Call
---- sync() to ensure the requested runtime and dependencies are installed.
+--- The constructor creates the runtime manager but does not download or compile
+--- a runtime. The dependency manager is configured after a runtime is selected.
+--- Call sync() to ensure the requested runtime and dependencies are installed.
 --- @param project_root  string                  Project directory.
 --- @param options?      Artemis.ProjectOptions
 --- @return Artemis.Project?  project
@@ -153,7 +233,6 @@ function Project.new(project_root, options)
     end
 
     local dependency_options = copy_options(options.dependency_options)
-    dependency_options.manifest_path = manifest_path
     dependency_options.cache_dir = runtime_manager.cache_dir
     dependency_options.metadata_dir = metadata_dir
     dependency_options.lua_version = manifest.data.lua
@@ -183,19 +262,37 @@ end
 
 --- Create or recreate DependencyManager with the selected runtime prefix.
 --- LuaRocks uses this prefix to find the matching interpreter, headers, and
---- libraries when building native rocks.
+--- libraries when building native rocks. Project supplies configuration only;
+--- dependency declarations are passed separately to each manager operation.
 --- @param lua_dir?  string  Exact Lua installation prefix.
 --- @return Artemis.DependencyManager?  manager
 --- @return string?                     error_message
 function Project:_create_dependency_manager(lua_dir)
     local dependency_options = copy_options(self._dependency_options)
     dependency_options.cache_dir = self.cache_dir
-    dependency_options.manifest_path = self.manifest_path
     dependency_options.metadata_dir = self.metadata_dir
     dependency_options.lua_version = self.manifest.data.lua
     dependency_options.lua_dir = lua_dir
 
-    return DependencyManager.new(self.root, self.manifest, dependency_options)
+    return DependencyManager.new(self.root, dependency_options)
+end
+
+--- Return the dependency manager, creating a configuration-only instance when needed.
+--- Listing or removing rocks does not require installing the selected Lua runtime.
+--- @return Artemis.DependencyManager?  manager
+--- @return string?                     error_message
+function Project:_ensure_dependency_manager()
+    if self.dependency_manager then
+        return self.dependency_manager
+    end
+
+    local manager, manager_error = self:_create_dependency_manager()
+    if not manager then
+        return nil, manager_error
+    end
+
+    self.dependency_manager = manager
+    return manager
 end
 
 --- Ensure that the requested Lua runtime is installed and selected.
@@ -277,13 +374,17 @@ function Project:sync()
     end
 
     if active_lockfile then
-        local locked_dependencies = active_lockfile:get_dependencies()
-        local dependencies_ready, dependency_error = self.dependency_manager:sync(locked_dependencies)
+        local dependencies, exact_versions, conversion_error = dependencies_from_lockfile(active_lockfile)
+        if not dependencies or not exact_versions then
+            return false, conversion_error
+        end
+
+        local dependencies_ready, dependency_error = self.dependency_manager:install(dependencies, exact_versions)
         if not dependencies_ready then
             return false, dependency_error
         end
 
-        local versions_match, version_error = self.dependency_manager:verify_locked(locked_dependencies)
+        local versions_match, version_error = self.dependency_manager:verify_versions(exact_versions)
         if not versions_match then
             return false, version_error
         end
@@ -292,9 +393,14 @@ function Project:sync()
         return true, nil, version
     end
 
-    -- No usable lockfile: resolve from manifest constraints, then capture the
-    -- resulting direct and transitive versions for the next synchronization.
-    local dependencies_ready, dependency_error = self.dependency_manager:sync()
+    -- No usable lockfile: resolve the declarations from the manifest, then
+    -- capture the resulting direct and transitive versions for the next sync.
+    local dependencies, conversion_error = dependencies_from_manifest(self.manifest)
+    if not dependencies then
+        return false, conversion_error
+    end
+
+    local dependencies_ready, dependency_error = self.dependency_manager:install(dependencies)
     if not dependencies_ready then
         return false, dependency_error
     end
@@ -335,28 +441,103 @@ function Project:sync()
     return true, nil, version
 end
 
---- Add a dependency to the manifest and install it with LuaRocks.
+--- Add a dependency to the manifest and install the resulting declarations.
 --- The runtime is installed first to ensure native rocks target the selected Lua.
+--- Manifest mutation and persistence are owned by Project, not DependencyManager.
 --- @param package_name         string  LuaRocks package name.
 --- @param version_constraint?  string  LuaRocks version constraint.
 --- @return boolean  success
 --- @return string?  error_message
 function Project:add_dependency(package_name, version_constraint)
+    local dependency, dependency_error = create_dependency(package_name, version_constraint)
+    if not dependency then
+        return false, dependency_error
+    end
+
     local runtime_ready, runtime_error = self:install_runtime()
     if not runtime_ready then
         return false, runtime_error
     end
 
-    return self.dependency_manager:add(package_name, version_constraint)
+    local previous_constraint = self.manifest:get_dependency(dependency.name)
+    local updated, update_error = self.manifest:set_dependency(dependency.name, dependency.constraint)
+    if not updated then
+        return false, update_error
+    end
+
+    local dependencies, conversion_error = dependencies_from_manifest(self.manifest)
+    if not dependencies then
+        if previous_constraint then
+            self.manifest:set_dependency(dependency.name, previous_constraint)
+        else
+            self.manifest:remove_dependency(dependency.name)
+        end
+        return false, conversion_error
+    end
+
+    local installed, install_error = self.dependency_manager:install(dependencies)
+    if not installed then
+        if previous_constraint then
+            self.manifest:set_dependency(dependency.name, previous_constraint)
+        else
+            self.manifest:remove_dependency(dependency.name)
+        end
+        return false, install_error
+    end
+
+    local saved, save_error = self.manifest:save(self.manifest_path)
+    if not saved then
+        if previous_constraint then
+            self.manifest:set_dependency(dependency.name, previous_constraint)
+        else
+            self.manifest:remove_dependency(dependency.name)
+        end
+
+        return false, string.format(
+            "Dependencies were installed, but the manifest could not be saved. The local tree may now contain the package. %s",
+            save_error
+        )
+    end
+
+    return true
 end
 
---- Remove a declared dependency from the manifest and attempt to uninstall it.
---- This does not install a missing Lua runtime merely to remove a package.
+--- Remove a dependency declaration and attempt to uninstall its rock.
+--- The manifest change is owned and persisted by Project. LuaRocks may retain a
+--- package when another installed rock still depends on it.
 --- @param package_name  string  LuaRocks package name.
 --- @return boolean  success
 --- @return string?  warning_or_error
 function Project:remove_dependency(package_name)
-    return self.dependency_manager:remove(package_name)
+    local previous_constraint = self.manifest:get_dependency(package_name)
+    if not previous_constraint then
+        return false, string.format("Dependency '%s' is not declared in the manifest.", tostring(package_name))
+    end
+
+    local dependency, dependency_error = create_dependency(package_name, previous_constraint)
+    if not dependency then
+        return false, dependency_error
+    end
+
+    -- Removal does not need to install a runtime, but it still needs a manager
+    -- configured for the project's LuaRocks tree.
+    local manager, manager_error = self:_ensure_dependency_manager()
+    if not manager then
+        return false, manager_error
+    end
+
+    local removed, remove_error = self.manifest:remove_dependency(dependency.name)
+    if not removed then
+        return false, remove_error or string.format("Could not remove dependency '%s'.", dependency.name)
+    end
+
+    local saved, save_error = self.manifest:save(self.manifest_path)
+    if not saved then
+        self.manifest:set_dependency(dependency.name, previous_constraint)
+        return false, save_error
+    end
+
+    return manager:uninstall(dependency.name)
 end
 
 --- Return the dependencies declared directly in the manifest.
@@ -369,7 +550,12 @@ end
 --- @return Artemis.InstalledRock[]?  rocks
 --- @return string?                   error_message
 function Project:list_installed()
-    return self.dependency_manager:list_installed()
+    local manager, manager_error = self:_ensure_dependency_manager()
+    if not manager then
+        return nil, manager_error
+    end
+
+    return manager:list_installed()
 end
 
 --- Return the installed rocks in the project's local tree.
@@ -431,23 +617,6 @@ function Project:run(script, args)
     end
 
     return Process.execute(table.concat(command_parts, " "))
-end
-
---- Alias for add_dependency().
---- @param package_name         string
---- @param version_constraint?  string
---- @return boolean  success
---- @return string?  error_message
-function Project:add(package_name, version_constraint)
-    return self:add_dependency(package_name, version_constraint)
-end
-
---- Alias for remove_dependency().
---- @param package_name  string
---- @return boolean  success
---- @return string?  warning_or_error
-function Project:remove(package_name)
-    return self:remove_dependency(package_name)
 end
 
 -----------------------------------------------------------------------------------------

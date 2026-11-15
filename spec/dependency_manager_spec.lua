@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
+--- @diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil, redundant-parameter, missing-parameter
 local DependencyManager = require("artemis.dependency_manager")
 local helpers = require("spec.helpers")
 

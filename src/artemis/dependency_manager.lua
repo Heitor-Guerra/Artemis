@@ -1,51 +1,53 @@
---- Project-local LuaRocks dependency management for Artemis.
+--- Install independent dependency declarations into a configured LuaRocks tree.
 ---
---- Dependencies are recorded in the Artemis manifest, while LuaRocks performs
---- version resolution, transitive dependency resolution, compilation, and
---- installation into a standard project-local LuaRocks tree (lua_modules by
---- default). When Artemis provides lock entries, their versions are translated
---- to LuaRocks' native lockfile format for reproducible dependency resolution.
+--- This module knows nothing about Artemis project metadata, manifests, or
+--- Artemis lockfiles. Callers provide Dependency values and, optionally, exact
+--- resolved versions. LuaRocks' own native lockfile format is handled internally.
+--- LuaRocks remains responsible for version resolution, transitive dependency
+--- resolution, compilation, and installation.
 ---
---- This first implementation invokes the LuaRocks CLI through a POSIX shell.
+--- LuaRocks commands are invoked through the shared process utility.
 --- @module 'artemis.dependency_manager'
 
 local Path = require("artemis.utils.path")
 local FileSystem = require("artemis.utils.filesystem")
 local Process = require("artemis.utils.process")
+local TableUtils = require("artemis.utils.table_utils")
 
 --- @class Artemis.DependencyManagerOptions
---- @field tree?             string  Project-local LuaRocks tree. Defaults to "lua_modules".
---- @field luarocks?         string  LuaRocks executable or project wrapper. Defaults to "./luarocks" when present, otherwise "luarocks".
---- @field lua_version?      string  Lua version selected by the project. Defaults to manifest.data.lua.
+--- @field tree?             string  LuaRocks tree. Defaults to "lua_modules".
+--- @field luarocks?         string  LuaRocks executable. Defaults to "./luarocks" when present, otherwise "luarocks".
+--- @field lua_version       string  Lua version used by LuaRocks.
 --- @field lua_dir?          string  Exact Lua installation prefix used to compile native rocks.
---- @field manifest_path?    string  Path to the project manifest. Defaults to manifest.path.
---- @field metadata_dir?     string  Artemis metadata directory. Defaults to ".artemis".
---- @field cache_dir?        string  Shared Artemis cache directory. Defaults to $XDG_CACHE_HOME/artemis or ~/.cache/artemis.
---- @field luarocks_config?  string  Optional existing LuaRocks config to load before Artemis cache settings.
+--- @field metadata_dir?     string  Directory for temporary generated rockspecs. Defaults to ".artemis".
+--- @field cache_dir?        string  Shared download cache directory. Defaults to $XDG_CACHE_HOME/artemis or ~/.cache/artemis.
+--- @field luarocks_config?  string  Optional existing LuaRocks config to load before cache settings.
+
+--- @class Artemis.Dependency
+--- @field name        string  LuaRocks package name.
+--- @field constraint  string  LuaRocks version constraint ("*" means any version).
 
 --- @class Artemis.InstalledRock
 --- @field name     string  Installed rock name.
 --- @field version  string  Installed rock version, including LuaRocks revision.
 
 --- @class Artemis.DependencyManager
---- @field root             string            Project root directory.
---- @field manifest         Artemis.Manifest  Manifest instance modified by this manager.
---- @field manifest_path    string            Path used to persist the manifest.
---- @field tree             string            Local LuaRocks tree.
---- @field luarocks         string            LuaRocks executable.
---- @field lua_version      string            Lua version used by LuaRocks.
---- @field lua_dir?         string            Exact Lua installation prefix, when selected by RuntimeManager.
---- @field metadata_dir     string            Directory for Artemis-generated files.
---- @field cache_dir        string            Shared Artemis cache directory.
---- @field rocks_cache_dir  string            LuaRocks download cache directory.
---- @field luarocks_config  string            Generated LuaRocks config that points to the shared cache.
+--- @field working_directory  string            Working directory for LuaRocks commands and generated files.
+--- @field tree               string            Configured LuaRocks tree.
+--- @field luarocks           string            LuaRocks executable.
+--- @field lua_version        string            Lua version used by LuaRocks.
+--- @field lua_dir?           string            Exact Lua installation prefix used for native builds.
+--- @field metadata_dir       string            Directory for generated rockspecs.
+--- @field cache_dir          string            Shared download cache directory.
+--- @field rocks_cache_dir    string            LuaRocks download cache directory.
+--- @field luarocks_config    string            Generated LuaRocks config for the shared cache.
 local DependencyManager = {}
 DependencyManager.__index = DependencyManager
 
 ------------------------------------ Local Functions ------------------------------------
 
 --- @type string
-local ROCKSPEC_PACKAGE = "artemis-project-dependencies"
+local ROCKSPEC_PACKAGE = "artemis-dependencies"
 
 --- @type string
 local ROCKSPEC_VERSION = "0.0.0-1"
@@ -54,11 +56,11 @@ local ROCKSPEC_VERSION = "0.0.0-1"
 local ROCKSPEC_FILENAME = ROCKSPEC_PACKAGE .. "-" .. ROCKSPEC_VERSION .. ".rockspec"
 
 --- Resolve the shared Artemis cache directory to an absolute path.
---- @param root        string  Absolute project root.
+--- @param working_directory string  Absolute working directory.
 --- @param requested?  string  Explicit cache directory.
 --- @return string?  cache_dir
 --- @return string?  error_message
-local function resolve_cache_dir(root, requested)
+local function resolve_cache_dir(working_directory, requested)
     local candidate = requested or os.getenv("ARTEMIS_CACHE_DIR")
 
     if candidate == nil or candidate == "" then
@@ -70,12 +72,12 @@ local function resolve_cache_dir(root, requested)
         elseif home and home:match("^/") then
             candidate = Path.join(Path.join(home, ".cache"), "artemis")
         else
-            candidate = Path.join(root, ".cache/artemis")
+            candidate = Path.join(working_directory, ".cache/artemis")
         end
     end
 
     -- Expand an explicitly supplied home-relative path before resolving other
-    -- relative paths against the project root. Only the current user's home
+    -- relative paths against the working directory. Only the current user's home
     -- directory is supported; named-user expansion is shell-specific.
     if candidate == "~" or candidate:sub(1, 2) == "~/" then
         local home = os.getenv("HOME")
@@ -87,7 +89,7 @@ local function resolve_cache_dir(root, requested)
     elseif candidate:sub(1, 1) == "~" then
         return nil, "Named-user home paths are not supported for the Artemis cache directory."
     elseif not Path.is_absolute(candidate) then
-        candidate = Path.join(root, candidate)
+        candidate = Path.join(working_directory, candidate)
     end
 
     candidate = candidate:gsub("/+$", "")
@@ -114,11 +116,11 @@ local function resolve_cache_dir(root, requested)
 end
 
 --- Find an existing LuaRocks configuration that should be preserved.
---- @param root              string  Project root.
+--- @param working_directory string  Working directory.
 --- @param lua_version       string  LuaRocks version identifier, such as "5.4".
 --- @param explicit_config?  string  Explicit config path.
 --- @return string[]  paths
-local function find_luarocks_configs(root, lua_version, explicit_config)
+local function find_luarocks_configs(working_directory, lua_version, explicit_config)
     local candidates = {}
     local specific_env = os.getenv("LUAROCKS_CONFIG_" .. lua_version:gsub("%.", "_"))
     local generic_env = os.getenv("LUAROCKS_CONFIG")
@@ -138,8 +140,8 @@ local function find_luarocks_configs(root, lua_version, explicit_config)
         candidates[#candidates + 1] = Path.join(Path.join(home, ".luarocks"), "config.lua")
     end
 
-    -- `luarocks init` may provide project-specific settings in this file.
-    candidates[#candidates + 1] = Path.join(Path.join(root, ".luarocks"), "config-" .. lua_version .. ".lua")
+    -- `luarocks init` may provide working-directory-specific settings in this file.
+    candidates[#candidates + 1] = Path.join(Path.join(working_directory, ".luarocks"), "config-" .. lua_version .. ".lua")
 
     local paths = {}
     local seen = {}
@@ -156,7 +158,7 @@ local function find_luarocks_configs(root, lua_version, explicit_config)
 end
 
 --- Create a LuaRocks config that redirects source downloads to the Artemis cache.
---- @param root              string  Project root.
+--- @param working_directory string  Working directory.
 --- @param cache_dir         string  Shared Artemis cache directory.
 --- @param lua_version       string  LuaRocks version identifier.
 --- @param explicit_config?  string  Existing LuaRocks config to preserve.
@@ -164,7 +166,7 @@ end
 --- @return string?  config_path
 --- @return string?  rocks_cache_dir
 --- @return string?  error_message
-local function create_luarocks_cache_config(root, cache_dir, lua_version, explicit_config, lua_dir)
+local function create_luarocks_cache_config(working_directory, cache_dir, lua_version, explicit_config, lua_dir)
     local rocks_cache_dir = Path.join(cache_dir, "rocks/downloads")
     local config_directory = Path.join(cache_dir, "luarocks")
     local config_path = Path.join(config_directory, "config-" .. lua_version .. ".lua")
@@ -182,7 +184,7 @@ local function create_luarocks_cache_config(root, cache_dir, lua_version, explic
         "-- Generated by Artemis. Do not edit; change the Artemis cache settings instead."
     }
 
-    for _, existing_config in ipairs(find_luarocks_configs(root, lua_version, explicit_config)) do
+    for _, existing_config in ipairs(find_luarocks_configs(working_directory, lua_version, explicit_config)) do
         if existing_config ~= config_path then
             lines[#lines + 1] = "dofile(" .. string.format("%q", existing_config) .. ")"
         end
@@ -217,14 +219,14 @@ local function create_luarocks_cache_config(root, cache_dir, lua_version, explic
     return config_path, rocks_cache_dir
 end
 
---- Execute a command in the project root.
+--- Execute a command in the configured working directory.
 --- @param self       Artemis.DependencyManager
 --- @param arguments  string[]                   Arguments following the LuaRocks executable.
 --- @return boolean  success
 --- @return string?  error_message
 local function execute_luarocks(self, arguments)
     local command_parts = {
-        "cd " .. Process.shell_quote(self.root) .. " &&",
+        "cd " .. Process.shell_quote(self.working_directory) .. " &&",
         "LUAROCKS_CONFIG=" .. Process.shell_quote(self.luarocks_config),
         "LUAROCKS_CONFIG_" .. self.lua_version:gsub("%.", "_") .. "=" .. Process.shell_quote(self.luarocks_config),
         Process.shell_quote(self.luarocks),
@@ -253,7 +255,7 @@ end
 --- @return string?  error_message
 local function capture_luarocks(self, arguments)
     local command_parts = {
-        "cd " .. Process.shell_quote(self.root) .. " &&",
+        "cd " .. Process.shell_quote(self.working_directory) .. " &&",
         "LUAROCKS_CONFIG=" .. Process.shell_quote(self.luarocks_config),
         "LUAROCKS_CONFIG_" .. self.lua_version:gsub("%.", "_") .. "=" .. Process.shell_quote(self.luarocks_config),
         Process.shell_quote(self.luarocks),
@@ -291,8 +293,8 @@ local function validate_package_name(package_name)
     return true
 end
 
---- Turn the project's Lua version into a LuaRocks dependency constraint.
---- A manifest value such as "5.4" means any patch release in the 5.4 series.
+--- Turn the configured Lua version into a LuaRocks dependency constraint.
+--- A series value such as "5.4" means any patch release in the 5.4 series.
 --- @param version  string
 --- @return string?
 local function lua_version_constraint(version)
@@ -309,34 +311,52 @@ local function lua_version_constraint(version)
     return nil
 end
 
---- Return dependency entries in deterministic package-name order.
---- @param dependencies  table<string, string>
+--- Validate a dense dependency array and return its rockspec lines.
+--- @param dependencies  Artemis.Dependency[]
 --- @return string[]?  lines
 --- @return string?    error_message
 local function make_dependency_lines(dependencies)
-    local names = {}
-    for name in pairs(dependencies) do
-        names[#names + 1] = name
+    if type(dependencies) ~= "table" or not TableUtils.is_dense_array(dependencies) then
+        return nil, "Dependencies must be a dense array of Artemis.Dependency values."
     end
-    table.sort(names)
 
-    local lines = {}
-    for _, name in ipairs(names) do
-        local constraint = dependencies[name]
-        local valid, validation_error = validate_package_name(name)
+    local sorted_dependencies = {}
+    local seen = {}
+    for index, dependency in ipairs(dependencies) do
+        if type(dependency) ~= "table" or not dependency.name then
+            return nil, string.format("Dependency at index %d must be an Artemis.Dependency instance.", index)
+        end
+
+        local valid, validation_error = validate_package_name(dependency.name)
         if not valid then
             return nil, validation_error
         end
 
-        if constraint == "*" then
-            -- An unconstrained Artemis dependency becomes a bare LuaRocks dependency.
-            lines[#lines + 1] = name
-        elseif type(constraint) ~= "string" or not constraint:match("%S") then
-            return nil, string.format("Dependency '%s' has an empty version constraint.", name)
-        elseif constraint:find("[\r\n]") then
-            return nil, string.format("Dependency '%s' has a version constraint containing a line break.", name)
+        if type(dependency.constraint) ~= "string" or not dependency.constraint:match("%S") then
+            return nil, string.format("Dependency '%s' has an empty version constraint.", dependency.name)
+        end
+        if dependency.constraint:find("[\r\n]") then
+            return nil,
+                string.format("Dependency '%s' has a version constraint containing a line break.", dependency.name)
+        end
+        if seen[dependency.name] then
+            return nil, string.format("Dependency '%s' was supplied more than once.", dependency.name)
+        end
+
+        seen[dependency.name] = true
+        sorted_dependencies[#sorted_dependencies + 1] = dependency
+    end
+
+    table.sort(sorted_dependencies, function(left, right)
+        return left.name < right.name
+    end)
+
+    local lines = {}
+    for _, dependency in ipairs(sorted_dependencies) do
+        if dependency.constraint == "*" then
+            lines[#lines + 1] = dependency.name
         else
-            lines[#lines + 1] = name .. " " .. constraint
+            lines[#lines + 1] = dependency.name .. " " .. dependency.constraint
         end
     end
 
@@ -344,26 +364,25 @@ local function make_dependency_lines(dependencies)
 end
 
 
---- Convert Artemis lock entries to LuaRocks' native lockfile format.
+--- Convert exact package versions to LuaRocks' native lockfile format.
 --- LuaRocks expects a Lua chunk returning { dependencies = { name = version } }.
---- @param locked_dependencies  table<string, table|string>
+--- @param exact_versions  table<string, string>
 --- @return string?  contents
 --- @return string?  error_message
-local function serialize_luarocks_lock(locked_dependencies)
-    if type(locked_dependencies) ~= "table" then
-        return nil, "Locked dependencies must be a table."
+local function serialize_luarocks_lock(exact_versions)
+    if type(exact_versions) ~= "table" then
+        return nil, "Exact versions must be a table."
     end
 
     local names = {}
-    for package_name, record in pairs(locked_dependencies) do
+    for package_name, version in pairs(exact_versions) do
         local valid, validation_error = validate_package_name(package_name)
         if not valid then
             return nil, validation_error
         end
 
-        local version = type(record) == "table" and record.version or record
         if type(version) ~= "string" or not version:match("%S") then
-            return nil, string.format("Lock entry for '%s' must contain an exact version.", package_name)
+            return nil, string.format("Exact version for '%s' must be a non-empty string.", package_name)
         end
 
         names[#names + 1] = package_name
@@ -371,15 +390,13 @@ local function serialize_luarocks_lock(locked_dependencies)
     table.sort(names)
 
     local lines = {
-        "-- Generated temporarily by Artemis from artemis-project.lock.",
+        "-- Generated temporarily by Artemis from supplied exact dependency versions.",
         "return {",
         "    dependencies = {"
     }
 
     for _, package_name in ipairs(names) do
-        local record = locked_dependencies[package_name]
-        local version = type(record) == "table" and record.version or record
-        lines[#lines + 1] = string.format("        [%q] = %q,", package_name, version)
+        lines[#lines + 1] = string.format("        [%q] = %q,", package_name, exact_versions[package_name])
     end
 
     lines[#lines + 1] = "    },"
@@ -389,15 +406,15 @@ local function serialize_luarocks_lock(locked_dependencies)
     return table.concat(lines, "\n")
 end
 
---- Run a callback while LuaRocks' native lockfile is staged at the project root.
---- Any pre-existing user lockfile is restored, including when installation fails.
+--- Run a callback while LuaRocks' native lockfile is staged in the working directory.
+--- Any pre-existing LuaRocks lockfile is restored, including when installation fails.
 --- @param self      Artemis.DependencyManager
 --- @param contents  string                     Serialized LuaRocks lockfile.
 --- @param callback  fun(): boolean, string?
 --- @return boolean  success
 --- @return string?  error_message
-local function with_native_lockfile(self, contents, callback)
-    local lock_path = Path.join(self.root, "luarocks.lock")
+local function with_luarocks_lockfile(self, contents, callback)
+    local lock_path = Path.join(self.working_directory, "luarocks.lock")
     local temporary_path = lock_path .. ".artemis-tmp"
     local had_previous = FileSystem.file_exists(lock_path)
     local previous_contents
@@ -446,7 +463,7 @@ local function with_native_lockfile(self, contents, callback)
     if not restored then
         return false,
             string.format(
-                "Dependency installation finished, but Artemis could not restore the project's previous 'luarocks.lock': %s",
+                "Dependency installation finished, but Artemis could not restore the previous 'luarocks.lock': %s",
                 restore_error)
     end
 
@@ -463,11 +480,11 @@ end
 ----------------------------------- Manager Functions -----------------------------------
 
 
---- Build a temporary rockspec from the current Artemis manifest.
---- @return string?  rockspec_path Relative rockspec path from the project root.
+--- Build a temporary rockspec from supplied dependency declarations.
+--- @param dependencies  Artemis.Dependency[]
+--- @return string?  rockspec_path Relative path from the working directory.
 --- @return string?  error_message
-function DependencyManager:_write_dependency_rockspec()
-    local dependencies = self.manifest:get_dependencies()
+function DependencyManager:_write_dependency_rockspec(dependencies)
     local dependency_lines, dependency_error = make_dependency_lines(dependencies)
     if not dependency_lines then
         return nil, dependency_error
@@ -488,7 +505,7 @@ function DependencyManager:_write_dependency_rockspec()
         '    url = "https://example.invalid/artemis-dependency-spec",',
         "}",
         "description = {",
-        '    summary = "Generated dependency specification for an Artemis project",',
+        '    summary = "Temporary dependency specification for Artemis",',
         '    license = "GPL-3.0-only",',
         "}",
         "dependencies = {"
@@ -502,14 +519,14 @@ function DependencyManager:_write_dependency_rockspec()
     lines[#lines + 1] = "build = { type = \"none\" }"
     lines[#lines + 1] = ""
 
-    local directory = Path.join(self.root, self.metadata_dir)
+    local directory = Path.join(self.working_directory, self.metadata_dir)
     local parent_created, parent_create_error = FileSystem.make_directory(directory)
     if not parent_created then
-        return nil, string.format("Could not create Artemis metadata directory '%s': %s", directory, parent_create_error)
+        return nil, string.format("Could not create metadata directory '%s': %s", directory, parent_create_error)
     end
 
     local relative_path = Path.join(self.metadata_dir, ROCKSPEC_FILENAME)
-    local absolute_path = Path.join(self.root, relative_path)
+    local absolute_path = Path.join(self.working_directory, relative_path)
     local saved, save_error = FileSystem.write_file(absolute_path, table.concat(lines, "\n"))
     if not saved then
         return nil, string.format("Could not write generated rockspec '%s': %s", absolute_path, save_error)
@@ -518,56 +535,35 @@ function DependencyManager:_write_dependency_rockspec()
     return relative_path
 end
 
---- Create a dependency manager bound to a project and its manifest.
---- @param project_root  string                            Project root directory.
---- @param manifest      Artemis.Manifest                  Manifest instance.
---- @param options?      Artemis.DependencyManagerOptions  Optional configuration.
+--- Create a dependency manager for a working directory and LuaRocks tree.
+--- The manager does not load or retain project metadata or dependency sources.
+--- @param working_directory  string                            Working directory for commands and temporary files.
+--- @param options?           Artemis.DependencyManagerOptions  Optional configuration.
 --- @return Artemis.DependencyManager?  manager
 --- @return string?                     error_message
-function DependencyManager.new(project_root, manifest, options)
-    if type(project_root) ~= "string" or not project_root:match("%S") then
-        return nil, "Project root must be a non-empty string."
-    end
-
-    if type(manifest) ~= "table" or type(manifest.get_dependencies) ~= "function"
-        or type(manifest.set_dependency) ~= "function" or type(manifest.remove_dependency) ~= "function"
-        or type(manifest.save) ~= "function" then
-        return nil, "DependencyManager.new expects a valid Artemis.Manifest instance."
+function DependencyManager.new(working_directory, options)
+    if type(working_directory) ~= "string" or not working_directory:match("%S") then
+        return nil, "Working directory must be a non-empty string."
     end
 
     options = options or {}
     if type(options) ~= "table" then
         return nil, "DependencyManager options must be a table."
     end
-    local root, root_error = Path.absolute_directory(project_root)
-    if not root then
-        return nil, string.format("Could not resolve project root directory: %s", root_error)
+    local absolute_working_directory, directory_error = Path.absolute_directory(working_directory)
+    if not absolute_working_directory then
+        return nil, string.format("Could not resolve working directory: %s", directory_error)
     end
 
-    local manifest_path = options.manifest_path or manifest.path or "artemis-project.toml"
-    if type(manifest_path) ~= "string" or not manifest_path:match("%S") then
-        return nil, "Manifest path must be a non-empty string."
-    end
-
-    if not Path.is_absolute(manifest_path) then
-        local normalized_root = root:gsub("/+$", "")
-        local already_rooted = normalized_root ~= ""
-            and manifest_path:sub(1, #normalized_root + 1) == normalized_root .. "/"
-
-        if not already_rooted then
-            manifest_path = Path.join(root, manifest_path)
-        end
-    end
-
-    local local_wrapper = Path.join(root, "luarocks")
+    local local_wrapper = Path.join(absolute_working_directory, "luarocks")
     local luarocks = options.luarocks
     if not luarocks then
         luarocks = FileSystem.file_exists(local_wrapper) and "./luarocks" or "luarocks"
     end
 
-    local lua_version = options.lua_version or (manifest.data and manifest.data.lua)
+    local lua_version = options.lua_version
     if type(lua_version) ~= "string" or not lua_version:match("%S") then
-        return nil, "The manifest must declare a Lua version before dependencies can be managed."
+        return nil, "A non-empty Lua version must be configured before dependencies can be installed."
     end
 
     -- LuaRocks uses `jit` (not `luajit`) as the --lua-version identifier.
@@ -589,7 +585,7 @@ function DependencyManager.new(project_root, manifest, options)
 
     local metadata_dir = options.metadata_dir or ".artemis"
     if type(metadata_dir) ~= "string" or not metadata_dir:match("%S") or Path.is_absolute(metadata_dir) then
-        return nil, "Artemis metadata directory must be a non-empty relative path."
+        return nil, "Generated rockspec directory must be a non-empty relative path."
     end
 
     if options.luarocks_config ~= nil
@@ -606,13 +602,13 @@ function DependencyManager.new(project_root, manifest, options)
     end
 
 
-    local cache_dir, cache_error = resolve_cache_dir(root, options.cache_dir)
+    local cache_dir, cache_error = resolve_cache_dir(absolute_working_directory, options.cache_dir)
     if not cache_dir then
         return nil, cache_error
     end
 
     local luarocks_config, rocks_cache_dir, config_error = create_luarocks_cache_config(
-        root,
+        absolute_working_directory,
         cache_dir,
         lua_version,
         options.luarocks_config,
@@ -623,9 +619,7 @@ function DependencyManager.new(project_root, manifest, options)
     end
 
     local self = setmetatable({}, DependencyManager)
-    self.root = root
-    self.manifest = manifest
-    self.manifest_path = manifest_path
+    self.working_directory = absolute_working_directory
     self.tree = tree
     self.luarocks = luarocks
     self.lua_version = lua_version
@@ -638,47 +632,49 @@ function DependencyManager.new(project_root, manifest, options)
     return self
 end
 
---- Install direct and transitive dependencies declared in the manifest.
---- When `locked_dependencies` is supplied, its exact versions are staged
---- in a temporary LuaRocks-native lockfile for reproducible installation.
---- @param locked_dependencies?  table<string, Artemis.LockedDependency>  Exact versions from Artemis.Lockfile.
+--- Install the supplied direct dependencies and their transitive dependencies.
+--- Exact resolved versions may be supplied separately to constrain the full graph.
+--- This operation does not read or mutate the Artemis manifest or lockfile.
+--- @param dependencies     Artemis.Dependency[]     Direct dependency declarations.
+--- @param exact_versions? table<string, string>    Exact versions for direct and transitive rocks.
 --- @return boolean  success
 --- @return string?  error_message
-function DependencyManager:sync(locked_dependencies)
-    local valid, validation_error = self.manifest:validate()
-    if not valid then
-        return false, validation_error
-    end
-
-    local dependencies = self.manifest:get_dependencies()
-    if next(dependencies) == nil then
+function DependencyManager:install(dependencies, exact_versions)
+    if #dependencies == 0 then
+        if exact_versions ~= nil then
+            if type(exact_versions) ~= "table" then
+                return false, "Exact versions must be supplied as a table."
+            end
+            if next(exact_versions) ~= nil then
+                return false, "Exact versions cannot be supplied without direct dependencies."
+            end
+        end
         return true
     end
 
+    local rockspec_path, rockspec_error = self:_write_dependency_rockspec(dependencies)
+    if not rockspec_path then
+        return false, rockspec_error
+    end
+
     local native_lock_contents
-    if locked_dependencies ~= nil then
-        if type(locked_dependencies) ~= "table" then
-            return false, "Locked dependencies must be supplied as a table."
+    if exact_versions ~= nil then
+        if type(exact_versions) ~= "table" then
+            return false, "Exact versions must be supplied as a table."
         end
 
-        for package_name in pairs(dependencies) do
-            local record = locked_dependencies[package_name]
-            local version = type(record) == "table" and record.version or record
+        for _, dependency in ipairs(dependencies) do
+            local version = exact_versions[dependency.name]
             if type(version) ~= "string" or not version:match("%S") then
-                return false, string.format("Direct dependency '%s' has no exact version in the lockfile.", package_name)
+                return false, string.format("Dependency '%s' has no exact locked version.", dependency.name)
             end
         end
 
         local lock_error
-        native_lock_contents, lock_error = serialize_luarocks_lock(locked_dependencies)
+        native_lock_contents, lock_error = serialize_luarocks_lock(exact_versions)
         if not native_lock_contents then
             return false, lock_error
         end
-    end
-
-    local rockspec_path, rockspec_error = self:_write_dependency_rockspec()
-    if not rockspec_path then
-        return false, rockspec_error
     end
 
     local function install_dependencies()
@@ -692,12 +688,12 @@ function DependencyManager:sync(locked_dependencies)
 
     local success, install_error
     if native_lock_contents then
-        success, install_error = with_native_lockfile(self, native_lock_contents, install_dependencies)
+        success, install_error = with_luarocks_lockfile(self, native_lock_contents, install_dependencies)
     else
         success, install_error = install_dependencies()
     end
 
-    FileSystem.remove(Path.join(self.root, rockspec_path))
+    FileSystem.remove(Path.join(self.working_directory, rockspec_path))
 
     if not success then
         return false, install_error
@@ -706,14 +702,24 @@ function DependencyManager:sync(locked_dependencies)
     return true
 end
 
---- Verify that each exact package version in an Artemis lockfile is installed.
+--- Verify that each supplied exact package version is installed.
 --- This detects LuaRocks releases that do not honor the native lockfile adapter.
---- @param locked_dependencies  table<string, Artemis.LockedDependency>
+--- @param exact_versions  table<string, string>
 --- @return boolean  valid
 --- @return string?  error_message
-function DependencyManager:verify_locked(locked_dependencies)
-    if type(locked_dependencies) ~= "table" then
-        return false, "Locked dependencies must be a table."
+function DependencyManager:verify_versions(exact_versions)
+    if type(exact_versions) ~= "table" then
+        return false, "Exact versions must be a table."
+    end
+
+    for package_name, expected_version in pairs(exact_versions) do
+        local valid, validation_error = validate_package_name(package_name)
+        if not valid then
+            return false, validation_error
+        end
+        if type(expected_version) ~= "string" or not expected_version:match("%S") then
+            return false, string.format("Exact version for '%s' must be a non-empty string.", package_name)
+        end
     end
 
     local installed, list_error = self:list_installed()
@@ -728,18 +734,18 @@ function DependencyManager:verify_locked(locked_dependencies)
     end
 
     local names = {}
-    for package_name in pairs(locked_dependencies) do
+    for package_name in pairs(exact_versions) do
         names[#names + 1] = package_name
     end
     table.sort(names)
 
     for _, package_name in ipairs(names) do
-        local record = locked_dependencies[package_name]
-        local expected_version = type(record) == "table" and record.version or record
+        local expected_version = exact_versions[package_name]
         if not installed_versions[package_name] or not installed_versions[package_name][expected_version] then
             return false, string.format(
-                "LuaRocks did not install the locked version of '%s' (expected %s). "
-                .. "Check that your LuaRocks version supports project lockfiles and that the version is available.",
+                "LuaRocks did not install the expected version of '%s' (expected %s). "
+                ..
+                "Check that the configured LuaRocks version supports exact-version lockfile installs and that the version is available.",
                 package_name,
                 tostring(expected_version)
             )
@@ -749,127 +755,49 @@ function DependencyManager:verify_locked(locked_dependencies)
     return true
 end
 
---- Add a rock to the manifest and install the resulting dependency set.
---- When no constraint is supplied, "*" is stored in the manifest and emitted as
---- an unconstrained dependency in the generated LuaRocks rockspec.
---- @param package_name         string  LuaRocks package name.
---- @param version_constraint?  string  LuaRocks constraint, e.g. ">= 0.7, < 1.0".
---- @return boolean  success
---- @return string?  error_message
-function DependencyManager:add(package_name, version_constraint)
-    local valid, validation_error = validate_package_name(package_name)
-    if not valid then
-        return false, validation_error
-    end
-
-    version_constraint = version_constraint or "*"
-    if type(version_constraint) ~= "string" or not version_constraint:match("%S") then
-        return false, "Version constraint must be a non-empty string."
-    end
-
-    if version_constraint:find("[\r\n]") then
-        return false, "Version constraint cannot contain line breaks."
-    end
-
-    local previous_constraint = self.manifest:get_dependency(package_name)
-    local updated, update_error = self.manifest:set_dependency(package_name, version_constraint)
-    if not updated then
-        return false, update_error
-    end
-
-    local installed, install_error = self:sync()
-    if not installed then
-        if previous_constraint then
-            self.manifest:set_dependency(package_name, previous_constraint)
-        else
-            self.manifest:remove_dependency(package_name)
-        end
-        return false, install_error
-    end
-
-    local saved, save_error = self.manifest:save(self.manifest_path)
-    if not saved then
-        if previous_constraint then
-            self.manifest:set_dependency(package_name, previous_constraint)
-        else
-            self.manifest:remove_dependency(package_name)
-        end
-
-        return false,
-            string.format(
-                "Dependencies were installed, but the manifest could not be saved. The local tree may now contain the package. %s",
-                save_error)
-    end
-
-    return true
-end
-
---- Remove a direct dependency from the manifest and try to uninstall its rock.
---- LuaRocks is allowed to refuse removal when another installed rock depends on
---- the package. In that case the manifest change is kept and the rock remains in
---- the local tree because it may still be a transitive dependency.
+--- Uninstall a rock from the configured LuaRocks tree.
+--- The caller owns any declaration or lockfile changes. LuaRocks may refuse to
+--- remove a package that is still required by another installed rock.
 --- @param package_name  string  LuaRocks package name.
 --- @return boolean  success
 --- @return string?  warning_or_error
-function DependencyManager:remove(package_name)
+function DependencyManager:uninstall(package_name)
     local valid, validation_error = validate_package_name(package_name)
     if not valid then
         return false, validation_error
     end
 
-    local previous_constraint = self.manifest:get_dependency(package_name)
-    if not previous_constraint then
-        return false, string.format("Dependency '%s' is not declared in the manifest.", package_name)
+    local installed, list_error = self:is_installed(package_name)
+    if installed == nil then
+        return true, string.format(
+            "Could not check the local tree for an installed copy of '%s': %s",
+            package_name,
+            list_error
+        )
     end
 
-    local removed, remove_error = self.manifest:remove_dependency(package_name)
-    if not removed then
-        return false, remove_error or string.format("Could not remove dependency '%s'.", package_name)
-    end
-
-    local saved, save_error = self.manifest:save(self.manifest_path)
-    if not saved then
-        self.manifest:set_dependency(package_name, previous_constraint)
-        return false, save_error
-    end
-
-    local installed_rocks, list_error = self:list_installed()
-    if not installed_rocks then
-        return true,
-            string.format("Removed '%s' from the manifest, but could not check the local tree for an installed copy: %s",
-                package_name, list_error
-            )
-    end
-
-    local is_installed = false
-    for _, rock in ipairs(installed_rocks) do
-        if rock.name == package_name then
-            is_installed = true
-            break
-        end
-    end
-
-    if not is_installed then
+    if not installed then
         return true
     end
 
-    local uninstall_ok, uninstall_error = execute_luarocks(self, {
+    local uninstalled, uninstall_error = execute_luarocks(self, {
         "remove",
         "--deps-mode=one",
         package_name
     })
 
-    if not uninstall_ok then
-        return true,
-            string.format(
-                "Removed '%s' from the manifest, but LuaRocks kept it in the local tree. It may still be required by another installed rock. Details: %s",
-                package_name, uninstall_error)
+    if not uninstalled then
+        return true, string.format(
+            "LuaRocks kept '%s' in the local tree. It may still be required by another installed rock. Details: %s",
+            package_name,
+            uninstall_error
+        )
     end
 
     return true
 end
 
---- List rocks currently installed in the project's local LuaRocks tree.
+--- List rocks currently installed in the configured LuaRocks tree.
 --- @return Artemis.InstalledRock[]?  rocks
 --- @return string?                   error_message
 function DependencyManager:list_installed()
@@ -892,7 +820,7 @@ function DependencyManager:list_installed()
     return rocks
 end
 
---- Check whether a rock is installed in this project's local tree.
+--- Check whether a rock is installed in the configured LuaRocks tree.
 --- @param package_name  string
 --- @return boolean?  installed
 --- @return string?   error_message
@@ -922,29 +850,12 @@ function DependencyManager:get_tree()
     return self.tree
 end
 
---- Return the LuaRocks path command output for this project tree.
+--- Return the LuaRocks path command output for the configured tree.
 --- The output contains shell exports such as LUA_PATH and LUA_CPATH.
 --- @return string?  output
 --- @return string?  error_message
 function DependencyManager:path()
     return capture_luarocks(self, { "path" })
-end
-
---- Alias for add(), matching install-oriented terminology.
---- @param package_name         string
---- @param version_constraint?  string
---- @return boolean  success
---- @return string?  error_message
-function DependencyManager:install(package_name, version_constraint)
-    return self:add(package_name, version_constraint)
-end
-
---- Alias for remove(), matching uninstall-oriented terminology.
---- @param package_name  string
---- @return boolean  success
---- @return string?  warning_or_error
-function DependencyManager:uninstall(package_name)
-    return self:remove(package_name)
 end
 
 -----------------------------------------------------------------------------------------
