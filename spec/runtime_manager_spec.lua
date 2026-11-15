@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
+--- @diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
 local RuntimeManager = require("artemis.runtime_manager")
 local helpers = require("spec.helpers")
 
@@ -16,8 +16,7 @@ local function make_manager(root, overrides)
 end
 
 local function make_directory(path)
-    local first, second, third = os.execute("mkdir -p " .. helpers.shell_quote(path))
-    assert.is_true(helpers.command_succeeded(first, second, third))
+    helpers.make_directory(path)
 end
 
 local function make_runtime(manager, version)
@@ -76,13 +75,14 @@ describe("artemis.runtime_manager global API", function()
         assert.is_nil(manager)
         assert.matches("Could not detect home directory", err)
 
-        manager, err = RuntimeManager.new({ cache_dir = "/tmp/artemis-invalid-source-url-cache", source_url = "http://example.com/" })
+        manager, err = RuntimeManager.new({ cache_dir = "/tmp/artemis-invalid-source-url-cache", source_url =
+        "http://example.com/" })
         assert.is_nil(manager)
         assert.matches("must be an HTTPS URL", err)
 
-        manager, err = RuntimeManager.new({ cache_dir = "/tmp/artemis-invalid-curl-cache", curl = "" })
+        manager, err = RuntimeManager.new({ cache_dir = "/tmp/artemis-invalid-tool-cache", make = "" })
         assert.is_nil(manager)
-        assert.matches("executable names must be non%-empty", err)
+        assert.matches("tar and make executable names must be non%-empty", err)
     end)
 
     it("prefers the explicit cache directory over environment defaults", function()
@@ -296,7 +296,7 @@ describe("artemis.runtime_manager version resolution", function()
         end)
     end)
 
-    it("reuses a verified cached archive without invoking curl", function()
+    it("reuses a verified cached archive without invoking the downloader", function()
         helpers.with_temp_dir(function(root)
             local manager = make_manager(root)
             local expected = string.rep("a", 64)
@@ -307,7 +307,11 @@ describe("artemis.runtime_manager version resolution", function()
                 assert.equals(archive, path)
                 return expected
             end
-            manager.curl = root .. "/curl-that-must-not-run"
+            manager.downloader = {
+                download = function()
+                    error("A verified cached archive should not be downloaded")
+                end
+            }
 
             local result, err = manager:_ensure_archive("5.4.9", expected)
             assert.is_nil(err)
@@ -361,10 +365,8 @@ describe("artemis.runtime_manager shared cache behavior", function()
             make_runtime(manager, "5.3.6")
             local incomplete = manager.runtimes_dir .. "/5.4.10/bin"
             local malformed = manager.runtimes_dir .. "/5.4-dev/bin/lua"
-            local first, second, third = os.execute("mkdir -p " .. helpers.shell_quote(incomplete))
-            assert.is_true(helpers.command_succeeded(first, second, third))
-            local fourth, fifth, sixth = os.execute("mkdir -p " .. helpers.shell_quote(malformed:match("^(.*)/lua$")))
-            assert.is_true(helpers.command_succeeded(fourth, fifth, sixth))
+            helpers.make_directory(incomplete)
+            helpers.make_directory(malformed:match("^(.*)/lua$"))
             helpers.write_file(malformed, "#!/bin/sh\nexit 0\n")
             helpers.make_executable(malformed)
 
@@ -475,8 +477,7 @@ describe("artemis.runtime_manager shared cache behavior", function()
             local manager = make_manager(root)
             make_runtime(manager, "5.4.9")
             local project_metadata = root .. "/some-project/.artemis/runtime-version"
-            local first, second, third = os.execute("mkdir -p " .. helpers.shell_quote(root .. "/some-project/.artemis"))
-            assert.is_true(helpers.command_succeeded(first, second, third))
+            helpers.make_directory(root .. "/some-project/.artemis")
             helpers.write_file(project_metadata, "5.4.9\n")
 
             local removed, err = manager:uninstall("5.4.9")
@@ -558,19 +559,13 @@ describe("artemis.runtime_manager installation", function()
     it("rejects a downloaded archive whose checksum does not match", function()
         helpers.with_temp_dir(function(root)
             local manager = make_manager(root)
-            local curl = root .. "/fake-curl"
-            helpers.write_file(curl, table.concat({
-                "#!/bin/sh",
-                "while [ $# -gt 0 ]; do",
-                "  if [ \"$1\" = --output ]; then shift; printf 'not-a-real-lua-archive' > \"$1\"; exit 0; fi",
-                "  shift",
-                "done",
-                "exit 9",
-                ""
-            }, "\n"))
-            helpers.make_executable(curl)
             make_directory(manager.downloads_dir)
-            manager.curl = curl
+            manager.downloader = {
+                download = function(_, destination)
+                    helpers.write_file(destination, "not-a-real-lua-archive")
+                    return true
+                end
+            }
             manager._sha256 = function()
                 return string.rep("b", 64)
             end

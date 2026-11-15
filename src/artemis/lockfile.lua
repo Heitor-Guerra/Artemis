@@ -11,6 +11,8 @@
 --- @module 'artemis.lockfile'
 
 local toml = require("tinytoml")
+local TableUtils = require("artemis.utils.table_utils")
+local FileSystem = require("artemis.utils.filesystem")
 
 --- @class Artemis.LockfileProject
 --- @field name      string  Project name from artemis-project.toml.
@@ -53,104 +55,6 @@ Lockfile.DEFAULT_FILENAME = "artemis-project.lock"
 --- @type string
 local GENERATOR_NAME = "artemis"
 
---- Create a deep copy so callers cannot mutate internal lockfile state.
---- @generic T
---- @param value  T
---- @return T
-local function deep_copy(value)
-    if type(value) ~= "table" then
-        return value
-    end
-
-    local copy = {}
-    for key, item in pairs(value) do
-        copy[deep_copy(key)] = deep_copy(item)
-    end
-
-    return copy
-end
-
---- Check whether a value is a non-empty string.
---- @param value  any
---- @return boolean
-local function is_non_empty_string(value)
-    return type(value) == "string" and value:match("%S") ~= nil
-end
-
---- Return sorted string keys from a map.
---- @param value  table
---- @return string[]
-local function sorted_string_keys(value)
-    local keys = {}
-
-    for key in pairs(value) do
-        if type(key) == "string" then
-            keys[#keys + 1] = key
-        end
-    end
-
-    table.sort(keys)
-    return keys
-end
-
---- Validate a dense array containing only non-empty strings.
---- @param value       any
---- @param field_name  string
---- @return string[]  errors
-local function validate_string_array(value, field_name)
-    local errors = {}
-
-    if type(value) ~= "table" then
-        errors[#errors + 1] = string.format("'%s' must be an array of strings.", field_name)
-        return errors
-    end
-
-    local count = 0
-    local highest_index = 0
-
-    for key, item in pairs(value) do
-        if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
-            errors[#errors + 1] = string.format("'%s' must contain only array elements.", field_name)
-        else
-            count = count + 1
-            if key > highest_index then
-                highest_index = key
-            end
-
-            if not is_non_empty_string(item) then
-                errors[#errors + 1] = string.format("Every item in '%s' must be a non-empty string.", field_name)
-            end
-        end
-    end
-
-    if count ~= highest_index then
-        errors[#errors + 1] = string.format("'%s' must not be a sparse array.", field_name)
-    end
-
-    return errors
-end
-
---- Check whether a value is a dense, one-based array.
---- @param value  table
---- @return boolean
-local function is_dense_array(value)
-    local count = 0
-    local highest_index = 0
-
-    for key in pairs(value) do
-        if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
-            return false
-        end
-
-        count = count + 1
-        if key > highest_index then
-            highest_index = key
-        end
-    end
-
-    return count == highest_index
-end
-
 --- Validate the complete decoded lockfile structure.
 --- @param data  any
 --- @return boolean  valid
@@ -169,26 +73,26 @@ local function validate_data(data)
             Lockfile.FORMAT_VERSION)
     end
 
-    if not is_non_empty_string(data.generated_by) then
+    if not TableUtils.is_non_empty_string(data.generated_by) then
         errors[#errors + 1] = "'generated_by' must be a non-empty string."
     end
 
     if type(data.project) ~= "table" then
         errors[#errors + 1] = "'project' must be a TOML table."
     else
-        if not is_non_empty_string(data.project.name) then
+        if not TableUtils.is_non_empty_string(data.project.name) then
             errors[#errors + 1] = "'project.name' is required and must be a non-empty string."
         end
 
-        if not is_non_empty_string(data.project.lua) then
+        if not TableUtils.is_non_empty_string(data.project.lua) then
             errors[#errors + 1] = "'project.lua' is required and must be a non-empty string."
         end
 
-        if data.project.runtime ~= nil and not is_non_empty_string(data.project.runtime) then
+        if data.project.runtime ~= nil and not TableUtils.is_non_empty_string(data.project.runtime) then
             errors[#errors + 1] = "'project.runtime' must be a non-empty string when provided."
         end
 
-        if data.project.version ~= nil and not is_non_empty_string(data.project.version) then
+        if data.project.version ~= nil and not TableUtils.is_non_empty_string(data.project.version) then
             errors[#errors + 1] = "'project.version' must be a non-empty string when provided."
         end
     end
@@ -199,7 +103,7 @@ local function validate_data(data)
         errors[#errors + 1] = "'dependencies' must be a table keyed by LuaRocks package name."
     else
         for package_name, record in pairs(data.dependencies) do
-            if not is_non_empty_string(package_name) then
+            if not TableUtils.is_non_empty_string(package_name) then
                 errors[#errors + 1] = "Dependency names must be non-empty strings."
             elseif type(record) ~= "table" then
                 errors[#errors + 1] = string.format(
@@ -207,7 +111,7 @@ local function validate_data(data)
                     package_name
                 )
             else
-                if not is_non_empty_string(record.version) then
+                if not TableUtils.is_non_empty_string(record.version) then
                     errors[#errors + 1] = string.format(
                         "Dependency '%s' must have an exact non-empty 'version'.",
                         package_name
@@ -223,7 +127,7 @@ local function validate_data(data)
 
                 for _, field_name in ipairs({ "constraint", "source", "checksum", "rockspec" }) do
                     local field_value = record[field_name]
-                    if field_value ~= nil and not is_non_empty_string(field_value) then
+                    if field_value ~= nil and not TableUtils.is_non_empty_string(field_value) then
                         errors[#errors + 1] = string.format(
                             "Dependency '%s' field '%s' must be a non-empty string when provided.",
                             package_name,
@@ -233,7 +137,7 @@ local function validate_data(data)
                 end
 
                 if record.requires ~= nil then
-                    local requires_errors = validate_string_array(
+                    local requires_errors = TableUtils.validate_string_array(
                         record.requires,
                         string.format("dependencies.%s.requires", package_name)
                     )
@@ -242,7 +146,7 @@ local function validate_data(data)
                     end
                 end
 
-                if record.direct == true and not is_non_empty_string(record.constraint) then
+                if record.direct == true and not TableUtils.is_non_empty_string(record.constraint) then
                     errors[#errors + 1] = string.format(
                         "Direct dependency '%s' must record its manifest 'constraint'.",
                         package_name
@@ -296,7 +200,7 @@ end
 --- @param values  string[]
 --- @return string
 local function serialize_string_array(values)
-    local copied_values = deep_copy(values)
+    local copied_values = TableUtils.deep_copy(values)
     table.sort(copied_values)
 
     local serialized = {}
@@ -329,7 +233,7 @@ local function serialize_toml(data)
         lines[#lines + 1] = "version = " .. quote_toml_string(data.project.version)
     end
 
-    local dependency_names = sorted_string_keys(data.dependencies)
+    local dependency_names = TableUtils.sorted_string_keys(data.dependencies)
     for _, package_name in ipairs(dependency_names) do
         local record = data.dependencies[package_name]
 
@@ -375,7 +279,7 @@ local function get_manifest_data(manifest)
     end
 
     local data = type(manifest.data) == "table" and manifest.data or manifest
-    if not is_non_empty_string(data.name) or not is_non_empty_string(data.lua) then
+    if not TableUtils.is_non_empty_string(data.name) or not TableUtils.is_non_empty_string(data.lua) then
         return nil, "The manifest must define non-empty 'name' and 'lua' fields."
     end
 
@@ -404,7 +308,7 @@ function Lockfile.new(data, path)
         return nil, "Lockfile.new expects a table as its first argument."
     end
 
-    local copied_data = deep_copy(data)
+    local copied_data = TableUtils.deep_copy(data)
     copied_data.lockfile_version = copied_data.lockfile_version or Lockfile.FORMAT_VERSION
     copied_data.generated_by = copied_data.generated_by or GENERATOR_NAME
     copied_data.dependencies = copied_data.dependencies or {}
@@ -428,7 +332,7 @@ end
 function Lockfile.load(path)
     path = path or Lockfile.DEFAULT_FILENAME
 
-    if not is_non_empty_string(path) then
+    if not TableUtils.is_non_empty_string(path) then
         return nil, "Lockfile path must be a non-empty string."
     end
 
@@ -465,7 +369,7 @@ function Lockfile.from_installed(manifest, installed_rocks, options)
         return nil, manifest_error
     end
 
-    if type(installed_rocks) ~= "table" or not is_dense_array(installed_rocks) then
+    if type(installed_rocks) ~= "table" or not TableUtils.is_dense_array(installed_rocks) then
         return nil, "Installed rocks must be a dense array of rock records."
     end
 
@@ -482,7 +386,7 @@ function Lockfile.from_installed(manifest, installed_rocks, options)
             return nil, string.format("Installed rock at index %d must be a table.", index)
         end
 
-        if not is_non_empty_string(rock.name) or not is_non_empty_string(rock.version) then
+        if not TableUtils.is_non_empty_string(rock.name) or not TableUtils.is_non_empty_string(rock.version) then
             return nil, string.format(
                 "Installed rock at index %d must define non-empty name and version fields.",
                 index
@@ -514,7 +418,7 @@ function Lockfile.from_installed(manifest, installed_rocks, options)
                 field_value = rock[field_name]
             end
             if field_value ~= nil then
-                record[field_name] = deep_copy(field_value)
+                record[field_name] = TableUtils.deep_copy(field_value)
             end
         end
 
@@ -560,7 +464,7 @@ end
 --- Return a deep copy of the decoded lockfile data.
 --- @return Artemis.LockfileData
 function Lockfile:to_table()
-    return deep_copy(self.data)
+    return TableUtils.deep_copy(self.data)
 end
 
 --- Get a copy of one locked package record.
@@ -572,13 +476,13 @@ function Lockfile:get_dependency(package_name)
     end
 
     local record = self.data.dependencies[package_name]
-    return record and deep_copy(record) or nil
+    return record and TableUtils.deep_copy(record) or nil
 end
 
 --- Return a copy of every locked package record.
 --- @return table<string, Artemis.LockedDependency>
 function Lockfile:get_dependencies()
-    return deep_copy(self.data.dependencies)
+    return TableUtils.deep_copy(self.data.dependencies)
 end
 
 --- Add or replace one locked package record.
@@ -588,14 +492,14 @@ end
 --- @return boolean  success
 --- @return string?  error_message
 function Lockfile:set_dependency(package_name, record)
-    if not is_non_empty_string(package_name) then
+    if not TableUtils.is_non_empty_string(package_name) then
         return false, "Dependency name must be a non-empty string."
     end
 
     if type(record) == "string" then
         record = { version = record, direct = false }
     elseif type(record) == "table" then
-        record = deep_copy(record)
+        record = TableUtils.deep_copy(record)
     else
         return false, "Dependency record must be an exact version string or a table."
     end
@@ -604,7 +508,7 @@ function Lockfile:set_dependency(package_name, record)
         record.direct = false
     end
 
-    local updated_data = deep_copy(self.data)
+    local updated_data = TableUtils.deep_copy(self.data)
     updated_data.dependencies[package_name] = record
 
     local valid, validation_error = validate_data(updated_data)
@@ -621,7 +525,7 @@ end
 --- @param package_name  string
 --- @return boolean  removed
 function Lockfile:remove_dependency(package_name)
-    if not is_non_empty_string(package_name) then
+    if not TableUtils.is_non_empty_string(package_name) then
         return false
     end
 
@@ -638,7 +542,7 @@ end
 --- @return boolean  success
 --- @return string?  error_message
 function Lockfile:set_runtime_version(runtime_version)
-    if runtime_version ~= nil and not is_non_empty_string(runtime_version) then
+    if runtime_version ~= nil and not TableUtils.is_non_empty_string(runtime_version) then
         return false, "Runtime version must be a non-empty string when provided."
     end
 
@@ -716,14 +620,14 @@ function Lockfile:matches_manifest(manifest)
 end
 
 --- Save the lockfile as TOML using an atomic temporary-file rename.
---- The destination directory must already exist.
+--- The destination directory is created when it does not exist.
 --- @param path?  string  Destination path. Defaults to this lockfile's path.
 --- @return boolean  success
 --- @return string?  error_message
 function Lockfile:save(path)
     path = path or self.path
 
-    if not is_non_empty_string(path) then
+    if not TableUtils.is_non_empty_string(path) then
         return false, "Lockfile path must be a non-empty string."
     end
 
@@ -734,28 +638,15 @@ function Lockfile:save(path)
 
     local encoded = serialize_toml(self.data)
     local temporary_path = path .. ".tmp"
-    local file, open_error = io.open(temporary_path, "wb")
-    if not file then
-        return false, string.format("Could not open temporary lockfile '%s': %s", temporary_path, open_error)
+    local saved, save_error = FileSystem.write_file(temporary_path, encoded)
+    if not saved then
+        return false, string.format("Could not write temporary lockfile '%s': %s", temporary_path, tostring(save_error))
     end
 
-    local write_result, write_error = file:write(encoded)
-    if not write_result then
-        file:close()
-        os.remove(temporary_path)
-        return false, string.format("Could not write lockfile '%s': %s", path, write_error)
-    end
-
-    local close_result, close_error = file:close()
-    if not close_result then
-        os.remove(temporary_path)
-        return false, string.format("Could not close lockfile '%s': %s", path, close_error)
-    end
-
-    local rename_result, rename_error = os.rename(temporary_path, path)
-    if not rename_result then
-        os.remove(temporary_path)
-        return false, string.format("Could not replace lockfile '%s': %s", path, rename_error)
+    local renamed, rename_error = FileSystem.rename(temporary_path, path)
+    if not renamed then
+        FileSystem.remove(temporary_path)
+        return false, string.format("Could not replace lockfile '%s': %s", path, tostring(rename_error))
     end
 
     self.path = path

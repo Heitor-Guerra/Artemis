@@ -7,6 +7,8 @@
 --- @module 'artemis.manifest'
 
 local toml = require("tinytoml")
+local TableUtils = require("artemis.utils.table_utils")
+local FileSystem = require("artemis.utils.filesystem")
 
 --- @class Artemis.ManifestData
 --- @field name          string                 Project name.
@@ -32,72 +34,6 @@ Manifest.DEFAULT_FILENAME = "artemis-project.toml"
 ------------------------------------ Local Functions ------------------------------------
 
 
---- Create a deep copy of a Lua table.
---- This prevents callers from accidentally changing the source table passed to
---- Manifest.new() after the manifest has been created.
---- @generic T
---- @param value  T
---- @return T
-local function deep_copy(value)
-    if type(value) ~= "table" then
-        return value
-    end
-
-    local copy = {}
-
-    for key, item in pairs(value) do
-        copy[deep_copy(key)] = deep_copy(item)
-    end
-
-    return copy
-end
-
---- Check whether a value is a non-empty string.
---- @param value  any
---- @return boolean
-local function is_non_empty_string(value)
-    return type(value) == "string" and value:match("%S") ~= nil
-end
-
---- Validate a string array such as `authors` or `maintainers`.
---- @param value       any
---- @param field_name  string
---- @return string[]  errors
-local function validate_string_array(value, field_name)
-    local errors = {}
-
-    if type(value) ~= "table" then
-        errors[#errors + 1] = string.format("'%s' must be an array of strings.", field_name)
-        return errors
-    end
-
-    -- TOML arrays map to dense, one-based Lua arrays. Reject dictionary keys
-    -- and sparse arrays instead of silently ignoring malformed values.
-    local item_count = 0
-    local highest_index = 0
-
-    for key, item in pairs(value) do
-        if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
-            errors[#errors + 1] = string.format("'%s' must contain only array elements.", field_name)
-        else
-            item_count = item_count + 1
-            if key > highest_index then
-                highest_index = key
-            end
-
-            if not is_non_empty_string(item) then
-                errors[#errors + 1] = string.format("Every item in '%s' must be a non-empty string.", field_name)
-            end
-        end
-    end
-
-    if item_count ~= highest_index then
-        errors[#errors + 1] = string.format("'%s' must not be a sparse array.", field_name)
-    end
-
-    return errors
-end
-
 --- Validate the dependency table.
 --- @param value  any
 --- @return string[]  errors
@@ -110,11 +46,11 @@ local function validate_dependencies(value)
     end
 
     for package_name, constraint in pairs(value) do
-        if not is_non_empty_string(package_name) then
+        if not TableUtils.is_non_empty_string(package_name) then
             errors[#errors + 1] = "Dependency names must be non-empty strings."
         end
 
-        if not is_non_empty_string(constraint) then
+        if not TableUtils.is_non_empty_string(constraint) then
             errors[#errors + 1] = string.format(
                 "The version constraint for dependency '%s' must be a non-empty string.",
                 tostring(package_name)
@@ -136,15 +72,15 @@ local function validate_data(data)
 
     local errors = {}
 
-    if not is_non_empty_string(data.name) then
+    if not TableUtils.is_non_empty_string(data.name) then
         errors[#errors + 1] = "'name' is required and must be a non-empty string."
     end
 
-    if not is_non_empty_string(data.lua) then
+    if not TableUtils.is_non_empty_string(data.lua) then
         errors[#errors + 1] = "'lua' is required and must be a non-empty Lua version string (for example, '5.4')."
     end
 
-    if data.version ~= nil and not is_non_empty_string(data.version) then
+    if data.version ~= nil and not TableUtils.is_non_empty_string(data.version) then
         errors[#errors + 1] = "'version' must be a non-empty string when provided."
     end
 
@@ -152,19 +88,19 @@ local function validate_data(data)
         errors[#errors + 1] = "'description' must be a string when provided."
     end
 
-    if data.main ~= nil and not is_non_empty_string(data.main) then
+    if data.main ~= nil and not TableUtils.is_non_empty_string(data.main) then
         errors[#errors + 1] = "'main' must be a non-empty path string when provided."
     end
 
     if data.authors ~= nil then
-        local author_errors = validate_string_array(data.authors, "authors")
+        local author_errors = TableUtils.validate_string_array(data.authors, "authors")
         for _, message in ipairs(author_errors) do
             errors[#errors + 1] = message
         end
     end
 
     if data.maintainers ~= nil then
-        local maintainer_errors = validate_string_array(data.maintainers, "maintainers")
+        local maintainer_errors = TableUtils.validate_string_array(data.maintainers, "maintainers")
         for _, message in ipairs(maintainer_errors) do
             errors[#errors + 1] = message
         end
@@ -205,7 +141,7 @@ function Manifest.new(data, path)
         return nil, "Manifest.new expects a table as its first argument."
     end
 
-    local copied_data = deep_copy(data)
+    local copied_data = TableUtils.deep_copy(data)
     local valid, validation_error = validate_data(copied_data)
 
     if not valid then
@@ -226,7 +162,7 @@ end
 function Manifest.load(path)
     path = path or Manifest.DEFAULT_FILENAME
 
-    if type(path) ~= "string" or not is_non_empty_string(path) then
+    if type(path) ~= "string" or not TableUtils.is_non_empty_string(path) then
         return nil, "Manifest path must be a non-empty string."
     end
 
@@ -253,7 +189,7 @@ end
 --- Mutating the returned table does not modify this Manifest instance.
 --- @return Artemis.ManifestData
 function Manifest:to_table()
-    return deep_copy(self.data)
+    return TableUtils.deep_copy(self.data)
 end
 
 --- Get the version constraint of a dependency.
@@ -270,7 +206,7 @@ end
 --- Return a copy of all runtime dependencies.
 --- @return table<string, string>
 function Manifest:get_dependencies()
-    return deep_copy(self.data.dependencies)
+    return TableUtils.deep_copy(self.data.dependencies)
 end
 
 --- Add or update a runtime dependency in the manifest data.
@@ -280,11 +216,11 @@ end
 --- @return boolean  success
 --- @return string?  error_message
 function Manifest:set_dependency(package_name, version_constraint)
-    if not is_non_empty_string(package_name) then
+    if not TableUtils.is_non_empty_string(package_name) then
         return false, "Dependency name must be a non-empty string."
     end
 
-    if not is_non_empty_string(version_constraint) then
+    if not TableUtils.is_non_empty_string(version_constraint) then
         return false, "Dependency version constraint must be a non-empty string."
     end
 
@@ -298,7 +234,7 @@ end
 --- @return boolean  removed  True if the dependency existed and was removed.
 --- @return string?  error_message
 function Manifest:remove_dependency(package_name)
-    if not is_non_empty_string(package_name) then
+    if not TableUtils.is_non_empty_string(package_name) then
         return false, "Dependency name must be a non-empty string."
     end
 
@@ -319,7 +255,7 @@ end
 function Manifest:save(path)
     path = path or self.path
 
-    if type(path) ~= "string" or not is_non_empty_string(path) then
+    if type(path) ~= "string" or not TableUtils.is_non_empty_string(path) then
         return false, "Manifest path must be a non-empty string."
     end
 
@@ -340,20 +276,9 @@ function Manifest:save(path)
         return false, string.format("Could not encode manifest: %s", tostring(encode_error or encoded))
     end
 
-    local file, open_error = io.open(path, "wb")
-    if not file then
-        return false, string.format("Could not open '%s' for writing: %s", path, open_error)
-    end
-
-    local write_result, write_error = file:write(encoded)
-    if not write_result then
-        file:close()
-        return false, string.format("Could not write manifest '%s': %s", path, write_error)
-    end
-
-    local close_result, close_reason = file:close()
-    if not close_result then
-        return false, string.format("Could not close manifest '%s': %s", path, close_reason)
+    local saved, save_error = FileSystem.write_file(path, encoded)
+    if not saved then
+        return false, string.format("Could not save manifest '%s': %s", path, tostring(save_error))
     end
 
     self.path = path

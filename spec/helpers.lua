@@ -1,4 +1,5 @@
 local helpers = {}
+local FileSystem = require("artemis.utils.filesystem")
 
 local function shell_quote(value)
     return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
@@ -12,8 +13,8 @@ function helpers.temp_dir()
     local path = os.tmpname()
     os.remove(path)
 
-    local first, second, third = os.execute("mkdir -p " .. shell_quote(path))
-    assert(command_succeeded(first, second, third), "Could not create temporary test directory")
+    local created, create_error = FileSystem.make_directory(path)
+    assert(created, tostring(create_error or "Could not create temporary test directory"))
 
     return path
 end
@@ -23,7 +24,8 @@ function helpers.remove_dir(path)
         return
     end
 
-    os.execute("rm -rf " .. shell_quote(path))
+    local removed, remove_error = FileSystem.remove(path)
+    assert(removed, tostring(remove_error or "Could not remove temporary test directory"))
 end
 
 function helpers.with_temp_dir(callback)
@@ -64,6 +66,12 @@ end
 function helpers.make_executable(path)
     local first, second, third = os.execute("chmod +x " .. shell_quote(path))
     assert(command_succeeded(first, second, third), "Could not mark test script executable")
+end
+
+function helpers.make_directory(path)
+    local created, create_error = FileSystem.make_directory(path)
+    assert(created, tostring(create_error))
+    return path
 end
 
 function helpers.shell_quote(value)

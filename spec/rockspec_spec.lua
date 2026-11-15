@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
+--- @diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
 describe("Artemis LuaRocks packaging", function()
     local function load_rockspec()
         local environment = {}
@@ -21,6 +21,15 @@ describe("Artemis LuaRocks packaging", function()
         for _, dependency in ipairs(rockspec.dependencies) do
             assert.is_false(dependency:match("^busted%s") ~= nil)
         end
+    end)
+
+    it("uses Lua libraries for HTTP downloads and SHA-256 checksums", function()
+        local rockspec = load_rockspec()
+        local dependencies = table.concat(rockspec.dependencies, "\n")
+        assert.is_truthy(dependencies:find("http >= 0.4", 1, true))
+        assert.is_truthy(dependencies:find("luaossl >= 20200709", 1, true))
+        assert.is_nil(dependencies:find("luasocket", 1, true))
+        assert.is_nil(dependencies:find("luasec", 1, true))
     end)
 
     it("maps every exported Artemis module to an existing source file", function()

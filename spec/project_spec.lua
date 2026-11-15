@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
+--- @diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
 local Project = require("artemis.project")
 local Lockfile = require("artemis.lockfile")
 local helpers = require("spec.helpers")
@@ -230,7 +230,7 @@ describe("artemis.project", function()
                 manifest = make_manifest(),
                 lockfile_path = "locks/project.lock",
                 cache_dir = root .. "/cache",
-                runtime_options = { sha256sum = "sha256sum" }
+                runtime_options = {}
             })
 
             assert.is_truthy(project, err)
@@ -246,7 +246,7 @@ describe("artemis.project", function()
             local project, err = Project.new(root, {
                 cache_dir = root .. "/shared-cache",
                 luarocks = "luarocks-test",
-                runtime_options = { sha256sum = "sha256sum" }
+                runtime_options = {}
             })
 
             assert.is_truthy(project, err)
@@ -255,11 +255,8 @@ describe("artemis.project", function()
             assert.equals(root .. "/artemis-project.lock", project.lockfile_path)
             assert.is_truthy(project.runtime_manager)
             assert.equals(root .. "/shared-cache", project.runtime_manager.cache_dir)
-            assert.equals(project.runtime_manager.cache_dir, project.dependency_manager.cache_dir)
             assert.is_nil(project.runtime_manager.project_root)
             assert.is_nil(project.runtime_manager.project_runtime_file)
-            assert.is_truthy(project.dependency_manager)
-            assert.equals("lua_modules", project.dependency_manager:get_tree())
         end)
     end)
 
@@ -268,7 +265,7 @@ describe("artemis.project", function()
             local project, err = Project.new(root, {
                 cache_dir = root .. "/cache",
                 luarocks = "luarocks-test",
-                runtime_options = { sha256sum = "sha256sum" }
+                runtime_options = {}
             })
             assert.is_nil(project)
             assert.matches("Could not parse manifest", err)

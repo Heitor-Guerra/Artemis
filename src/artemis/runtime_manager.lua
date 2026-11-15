@@ -5,21 +5,25 @@
 --- Artemis cache. Projects reference the cached interpreter instead of keeping
 --- a separate copy of every Lua installation.
 ---
---- This initial implementation supports Unix-like systems with curl, tar,
---- make, and a C compiler available on PATH. LuaJIT is intentionally not
+--- HTTP and SHA-256 work use Lua libraries. Building Lua source still requires
+--- tar, make, and a C compiler available on PATH. LuaJIT is intentionally not
 --- supported by this source-build backend yet.
 ---
 --- @module 'artemis.runtime_manager'
 
-local lfs = require("lfs")
+local Path = require("artemis.utils.path")
+local FileSystem = require("artemis.utils.filesystem")
+local Process = require("artemis.utils.process")
+local Downloader = require("artemis.utils.downloader")
+local Checksum = require("artemis.utils.checksum")
 
 --- @class Artemis.RuntimeManagerOptions
 --- @field cache_dir?         string  Shared Artemis cache directory. Defaults to $XDG_CACHE_HOME/artemis or ~/.cache/artemis.
---- @field curl?              string  curl executable. Defaults to "curl".
 --- @field tar?               string  tar executable. Defaults to "tar".
 --- @field make?              string  make executable. Defaults to "make".
---- @field sha256sum?         string  SHA-256 executable. Defaults to "sha256sum".
 --- @field source_url?        string  Official Lua source index URL.
+--- @field downloader?        table   HTTP client override, primarily for tests.
+--- @field checksum?          table   Checksum provider override, primarily for tests.
 
 --- @class Artemis.LuaRelease
 --- @field version      string  Exact Lua release version, such as "5.4.9".
@@ -31,10 +35,10 @@ local lfs = require("lfs")
 --- @field downloads_dir         string            Directory containing downloaded Lua source archives.
 --- @field runtimes_dir          string            Directory containing compiled Lua installations.
 --- @field build_dir             string            Temporary source/build directory.
---- @field curl                  string            curl executable.
 --- @field tar                   string            tar executable.
 --- @field make                  string            make executable.
---- @field sha256sum             string            SHA-256 executable, when available.
+--- @field downloader            table             HTTP downloader implementation.
+--- @field checksum              table             Checksum provider.
 --- @field source_url            string            Official Lua source index URL.
 local RuntimeManager = {}
 RuntimeManager.__index = RuntimeManager
@@ -43,178 +47,6 @@ RuntimeManager.__index = RuntimeManager
 RuntimeManager.DEFAULT_SOURCE_URL = "https://www.lua.org/ftp/"
 
 ------------------------------------ Local Functions ------------------------------------
-
---- Join two filesystem paths using Unix separators.
---- @param first   string
---- @param second  string
---- @return string
-local function join_path(first, second)
-    if first == "" then
-        local ret = second:gsub("^/+", "")
-        return ret
-    end
-
-    return first:gsub("/+$", "") .. "/" .. second:gsub("^/+", "")
-end
-
---- Check whether a path is absolute on Unix or Windows.
---- @param path  string
---- @return boolean
-local function is_absolute_path(path)
-    return path:sub(1, 1) == "/" or path:match("^%a:[/\\]") ~= nil
-end
-
---- Quote a value as one POSIX shell argument.
---- @param value  string
---- @return string
-local function shell_quote(value)
-    return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
-end
-
---- Interpret os.execute/io.popen close results across Lua versions.
---- @param success   true?
---- @param exitcode  "exit"|"signal"?
---- @param code      integer?
---- @return boolean
-local function command_succeeded(success, exitcode, code)
-    if success == true then
-        return true
-    end
-
-    return exitcode == "exit" and code == 0
-end
-
---- Run a command and return its combined standard output and standard error.
---- @param command  string
---- @return string?  output
---- @return string?  error_message
-local function capture_command(command)
-    --- Concatenate command to " 2>&1" to redirect stderr to stdout
-    local handle, open_error = io.popen(command .. " 2>&1", "r")
-    if not handle then
-        return nil, string.format("Could not execute command: %s", open_error)
-    end
-
-    local output = handle:read("a") or ""
-    local success, exitcode, code = handle:close()
-
-    if not command_succeeded(success, exitcode, code) then
-        return nil, string.format(
-            "Command failed (status: %s):\n%s",
-            tostring(code or exitcode or success),
-            output
-        )
-    end
-
-    return output
-end
-
---- Run a command without capturing its output.
---- @param command  string
---- @return boolean  success
---- @return string?  error_message
-local function execute_command(command)
-    local success, exitcode, code = os.execute(command)
-    if command_succeeded(success, exitcode, code) then
-        return true
-    end
-
-    return false, string.format("Command failed (status: %s): %s", tostring(code or exitcode or success), command)
-end
-
---- Read a small text file.
---- @param path  string
---- @return string?  contents
-local function read_file(path)
-    local file = io.open(path, "rb")
-    if not file then
-        return nil
-    end
-
-    local contents = file:read("a")
-    file:close()
-    return contents
-end
-
---- Write text to a file, creating its parent directory first.
---- @param path      string
---- @param contents  string
---- @return boolean  success
---- @return string?  error_message
-local function write_file(path, contents)
-    local parent = path:match("^(.*)/[^/]+$")
-    if parent then
-        local created, create_error = execute_command("mkdir -p " .. shell_quote(parent))
-        if not created then
-            return false, create_error
-        end
-    end
-
-    local file, open_error = io.open(path, "wb")
-    if not file then
-        return false, string.format("Could not open '%s' for writing: %s", path, open_error)
-    end
-
-    local write_ok, write_error = file:write(contents)
-    if not write_ok then
-        file:close()
-        return false, string.format("Could not write '%s': %s", path, write_error)
-    end
-
-    local close_ok, close_reason = file:close()
-    if not close_ok then
-        return false, string.format("Could not close '%s': %s", path, close_reason)
-    end
-
-    return true
-end
-
---- Check whether a file exists.
---- @param path  string
---- @return boolean
-local function file_exists(path)
-    local mode = lfs.attributes(path, "mode")
-    return mode == "file"
-end
-
---- Check whether a directory exists.
---- @param path  string
---- @return boolean
-local function directory_exists(path)
-    local mode = lfs.attributes(path, "mode")
-    return mode == "directory"
-end
-
---- Check whether an executable file exists.
---- @param path  string
---- @return boolean
-local function executable_exists(path)
-    local attr = lfs.attributes(path)
-    if not attr or attr.mode ~= "file" then
-        return false
-    end
-
-    -- Check the permissions string for an 'x' (e.g., rwxr-xr-x)
-    local perms = attr.permissions
-    if perms and perms:match("x") then
-        return true
-    end
-
-    return false
-end
-
---- Resolve a directory to an absolute path.
---- @param path  string
---- @return string?  absolute_path
---- @return string?  error_message
-local function absolute_directory(path)
-    local output, command_error = capture_command("cd " .. shell_quote(path) .. " && pwd")
-    if not output then
-        return nil, command_error
-    end
-
-    return output:match("^([^\r\n]+)")
-end
 
 --- Resolve the shared Artemis cache directory.
 --- @param requested_cache_dir?  string
@@ -228,9 +60,9 @@ local function resolve_cache_dir(requested_cache_dir)
         local home = os.getenv("HOME")
 
         if xdg_cache_home and xdg_cache_home:match("^/") then
-            candidate = join_path(xdg_cache_home, "artemis")
+            candidate = Path.join(xdg_cache_home, "artemis")
         elseif home and home:match("^/") then
-            candidate = join_path(join_path(home, ".cache"), "artemis")
+            candidate = Path.join(Path.join(home, ".cache"), "artemis")
         else
             return nil, "Could not detect home directory."
         end
@@ -245,10 +77,10 @@ local function resolve_cache_dir(requested_cache_dir)
             return nil, "Cannot expand the cache path because HOME is not an absolute path."
         end
 
-        candidate = candidate == "~" and home or join_path(home, candidate:sub(3))
+        candidate = candidate == "~" and home or Path.join(home, candidate:sub(3))
     elseif candidate:sub(1, 1) == "~" then
         return nil, "Named-user home paths are not supported for the Artemis cache directory."
-    elseif not is_absolute_path(candidate) then
+    elseif not Path.is_absolute(candidate) then
         return nil, "Could not detect home directory."
     end
 
@@ -261,18 +93,18 @@ local function resolve_cache_dir(requested_cache_dir)
     if not parent or parent == "" then
         parent = "/"
     end
-    local parent_created, parent_create_error = execute_command("mkdir -p " .. shell_quote(parent))
+    local parent_created, parent_create_error = FileSystem.make_directory(parent)
     if not parent_created then
         return nil, string.format("Could not create Artemis cache parent directory: %s", parent_create_error)
     end
 
-    local absolute_parent, parent_error = absolute_directory(parent)
+    local absolute_parent, parent_error = Path.absolute_directory(parent)
     if not absolute_parent then
         return nil, string.format("Could not resolve Artemis cache directory: %s", parent_error)
     end
 
     local basename = candidate:match("([^/]+)$") or "artemis"
-    return join_path(absolute_parent, basename)
+    return Path.join(absolute_parent, basename)
 end
 
 --- Parse a requested Lua version.
@@ -385,10 +217,7 @@ end
 --- @return string?  html
 --- @return string?  error_message
 function RuntimeManager:_fetch_release_index()
-    return capture_command(
-        shell_quote(self.curl) .. " --fail --silent --show-error --location --retry 2 "
-        .. shell_quote(self.source_url .. "index.html")
-    )
+    return self.downloader.get(self.source_url .. "index.html", { attempts = 3 })
 end
 
 --- Retrieve the official checksum for an exact Lua release.
@@ -396,8 +225,8 @@ end
 --- @return string?  checksum
 --- @return string?  error_message
 function RuntimeManager:_get_release_checksum(version)
-    local checksum_path = join_path(self.downloads_dir, "lua-" .. version .. ".sha256")
-    local cached_checksum = read_file(checksum_path)
+    local checksum_path = Path.join(self.downloads_dir, "lua-" .. version .. ".sha256")
+    local cached_checksum = FileSystem.read_file(checksum_path)
 
     if cached_checksum then
         local checksum = cached_checksum:match("^%s*([%da-fA-F]+)")
@@ -420,7 +249,7 @@ function RuntimeManager:_get_release_checksum(version)
                 version)
     end
 
-    local saved, save_error = write_file(checksum_path, checksum .. "\n")
+    local saved, save_error = FileSystem.write_file(checksum_path, checksum .. "\n")
     if not saved then
         return nil, save_error
     end
@@ -434,8 +263,8 @@ end
 --- @return string?  checksum
 --- @return string?  error_message
 function RuntimeManager:_resolve_latest_series(series)
-    local mapping_path = join_path(self.cache_dir, "metadata/lua-series-" .. series .. ".txt")
-    local mapped_version = read_file(mapping_path)
+    local mapping_path = Path.join(self.cache_dir, "metadata/lua-series-" .. series .. ".txt")
+    local mapped_version = FileSystem.read_file(mapping_path)
     if mapped_version then
         mapped_version = mapped_version:match("^%s*([%d%.]+)")
         if mapped_version then
@@ -443,7 +272,8 @@ function RuntimeManager:_resolve_latest_series(series)
             if mapped_series == series then
                 -- A completed installation needs no network lookup or checksum.
                 if self:is_installed(mapped_version) then
-                    local checksum = read_file(join_path(self.downloads_dir, "lua-" .. mapped_version .. ".sha256"))
+                    local checksum = FileSystem.read_file(Path.join(self.downloads_dir,
+                        "lua-" .. mapped_version .. ".sha256"))
                     checksum = checksum and checksum:match("^%s*([%da-fA-F]+)") or nil
                     return mapped_version, checksum
                 end
@@ -536,24 +366,12 @@ function RuntimeManager:resolve_version(requested_version)
     return self:_resolve_latest_series(series)
 end
 
---- Verify a cached archive with the system SHA-256 utility.
+--- Verify a cached archive with the shared OpenSSL-backed checksum module.
 --- @param archive_path  string
 --- @return string?  actual_checksum
 --- @return string?  error_message
 function RuntimeManager:_sha256(archive_path)
-    local command = shell_quote(self.sha256sum) .. " " .. shell_quote(archive_path)
-
-    local output, command_error = capture_command(command)
-    if not output then
-        return nil, string.format("Could not calculate SHA-256: %s", command_error)
-    end
-
-    local checksum = output:match("^%s*([%da-fA-F]+)")
-    if not checksum or #checksum ~= 64 then
-        return nil, "The SHA-256 utility returned an unexpected result."
-    end
-
-    return checksum:lower()
+    return self.checksum.sha256_file(archive_path)
 end
 
 --- Download a source archive once, verify it, and retain it in the shared cache.
@@ -563,9 +381,9 @@ end
 --- @return string?  error_message
 function RuntimeManager:_ensure_archive(version, expected_checksum)
     local archive_name = "lua-" .. version .. ".tar.gz"
-    local archive_path = join_path(self.downloads_dir, archive_name)
+    local archive_path = Path.join(self.downloads_dir, archive_name)
 
-    if file_exists(archive_path) then
+    if FileSystem.file_exists(archive_path) then
         local actual_checksum, checksum_error = self:_sha256(archive_path)
         if not actual_checksum then
             return nil, checksum_error
@@ -575,7 +393,7 @@ function RuntimeManager:_ensure_archive(version, expected_checksum)
             return archive_path
         end
 
-        local removed, remove_error = execute_command("rm -f " .. shell_quote(archive_path))
+        local removed, remove_error = FileSystem.remove(archive_path)
         if not removed then
             return nil,
                 string.format("Cached Lua archive is invalid and could not be removed: %s", remove_error)
@@ -583,29 +401,26 @@ function RuntimeManager:_ensure_archive(version, expected_checksum)
     end
 
     local temporary_path = archive_path .. ".part"
-    os.remove(temporary_path)
+    FileSystem.remove(temporary_path)
 
-    local download_command = table.concat({
-        shell_quote(self.curl),
-        "--fail --silent --show-error --location --retry 2",
-        "--output", shell_quote(temporary_path),
-        shell_quote(self.source_url .. archive_name)
-    }, " ")
-
-    local downloaded, download_error = execute_command(download_command)
+    local downloaded, download_error = self.downloader.download(
+        self.source_url .. archive_name,
+        temporary_path,
+        { attempts = 3 }
+    )
     if not downloaded then
-        os.remove(temporary_path)
+        FileSystem.remove(temporary_path)
         return nil, string.format("Could not download Lua %s: %s", version, download_error)
     end
 
     local actual_checksum, checksum_error = self:_sha256(temporary_path)
     if not actual_checksum then
-        os.remove(temporary_path)
+        FileSystem.remove(temporary_path)
         return nil, checksum_error
     end
 
     if actual_checksum ~= expected_checksum then
-        os.remove(temporary_path)
+        FileSystem.remove(temporary_path)
         return nil, string.format(
             "SHA-256 mismatch for Lua %s. Expected %s, received %s.",
             version,
@@ -614,16 +429,14 @@ function RuntimeManager:_ensure_archive(version, expected_checksum)
         )
     end
 
-    local moved, move_error = execute_command(
-        "mv " .. shell_quote(temporary_path) .. " " .. shell_quote(archive_path)
-    )
+    local moved, move_error = FileSystem.rename(temporary_path, archive_path)
     if not moved then
-        os.remove(temporary_path)
+        FileSystem.remove(temporary_path)
         return nil, string.format("Could not move the verified archive into the cache: %s", move_error)
     end
 
-    local checksum_saved, save_error = write_file(
-        join_path(self.downloads_dir, "lua-" .. version .. ".sha256"),
+    local checksum_saved, save_error = FileSystem.write_file(
+        Path.join(self.downloads_dir, "lua-" .. version .. ".sha256"),
         expected_checksum .. "\n"
     )
     if not checksum_saved then
@@ -639,55 +452,52 @@ end
 --- @return boolean  success
 --- @return string?  error_message
 function RuntimeManager:_build_and_install(version, archive_path)
-    local build_directory = join_path(self.build_dir, "lua-" .. version)
-    local source_directory = join_path(build_directory, "lua-" .. version)
-    local staging_directory = join_path(build_directory, "staging")
-    local final_directory = join_path(self.runtimes_dir, version)
-    local executable = join_path(staging_directory, "bin/lua")
+    local build_directory = Path.join(self.build_dir, "lua-" .. version)
+    local source_directory = Path.join(build_directory, "lua-" .. version)
+    local staging_directory = Path.join(build_directory, "staging")
+    local final_directory = Path.join(self.runtimes_dir, version)
+    local executable = Path.join(staging_directory, "bin/lua")
 
-    local cleaned, clean_error = execute_command("rm -rf " .. shell_quote(build_directory))
+    local cleaned, clean_error = FileSystem.remove(build_directory)
     if not cleaned then
         return false, string.format("Could not prepare the Lua build directory: %s", clean_error)
     end
 
-    local made, make_error = execute_command("mkdir -p " .. shell_quote(build_directory))
+    local made, make_error = FileSystem.make_directory(build_directory)
     if not made then
         return false, make_error
     end
 
-    local extracted, extract_error = execute_command(
-        shell_quote(self.tar) .. " -xzf " .. shell_quote(archive_path)
-        .. " -C " .. shell_quote(build_directory)
+    local extracted, extract_error = Process.execute(
+        Process.shell_quote(self.tar) .. " -xzf " .. Process.shell_quote(archive_path)
+        .. " -C " .. Process.shell_quote(build_directory)
     )
     if not extracted then
         return false, string.format("Could not extract Lua %s: %s", version, extract_error)
     end
 
-    if not directory_exists(source_directory) then
+    if not FileSystem.directory_exists(source_directory) then
         return false, string.format("The Lua %s archive did not contain the expected source directory.", version)
     end
 
-    local built, build_error = execute_command(
-        "cd " .. shell_quote(source_directory) .. " && "
-        .. shell_quote(self.make) .. " all test"
-    )
+    local built, build_error = Process.execute_in(source_directory, Process.shell_quote(self.make) .. " all test")
     if not built then
         return false, string.format("Could not build or test Lua %s: %s", version, build_error)
     end
 
-    local installed, install_error = execute_command(
-        "cd " .. shell_quote(source_directory) .. " && "
-        .. shell_quote(self.make) .. " install INSTALL_TOP=" .. shell_quote(staging_directory)
+    local installed, install_error = Process.execute_in(
+        source_directory,
+        Process.shell_quote(self.make) .. " install INSTALL_TOP=" .. Process.shell_quote(staging_directory)
     )
     if not installed then
         return false, string.format("Could not stage the Lua %s installation: %s", version, install_error)
     end
 
-    if not executable_exists(executable) then
+    if not FileSystem.executable_exists(executable) then
         return false, string.format("Lua %s built successfully, but its staged interpreter was not found.", version)
     end
 
-    local version_output, version_error = capture_command(shell_quote(executable) .. " -v")
+    local version_output, version_error = Process.capture(Process.shell_quote(executable) .. " -v")
     if not version_output then
         return false, string.format("Could not execute the newly built Lua interpreter: %s", version_error)
     end
@@ -699,38 +509,34 @@ function RuntimeManager:_build_and_install(version, archive_path)
         )
     end
 
-    local parent_created, parent_error = execute_command("mkdir -p " .. shell_quote(self.runtimes_dir))
+    local parent_created, parent_error = FileSystem.make_directory(self.runtimes_dir)
     if not parent_created then
         return false, parent_error
     end
 
     -- Keep a previously cached directory until the new build has passed all checks.
     local backup_directory = final_directory .. ".old"
-    execute_command("rm -rf " .. shell_quote(backup_directory))
+    FileSystem.remove(backup_directory)
 
-    if directory_exists(final_directory) then
-        local backed_up, backup_error = execute_command(
-            "mv " .. shell_quote(final_directory) .. " " .. shell_quote(backup_directory)
-        )
+    if FileSystem.directory_exists(final_directory) then
+        local backed_up, backup_error = FileSystem.rename(final_directory, backup_directory)
         if not backed_up then
             return false, string.format("Could not back up the previous Lua runtime: %s", backup_error)
         end
     end
 
-    local promoted, promote_error = execute_command(
-        "mv " .. shell_quote(staging_directory) .. " " .. shell_quote(final_directory)
-    )
+    local promoted, promote_error = FileSystem.rename(staging_directory, final_directory)
 
     if not promoted then
-        if directory_exists(backup_directory) then
-            execute_command("mv " .. shell_quote(backup_directory) .. " " .. shell_quote(final_directory))
+        if FileSystem.directory_exists(backup_directory) then
+            FileSystem.rename(backup_directory, final_directory)
         end
 
         return false, string.format("Could not activate the Lua runtime: %s", promote_error)
     end
 
-    execute_command("rm -rf " .. shell_quote(backup_directory))
-    execute_command("rm -rf " .. shell_quote(build_directory))
+    FileSystem.remove(backup_directory)
+    FileSystem.remove(build_directory)
 
     return true
 end
@@ -756,14 +562,11 @@ function RuntimeManager.new(options)
         return nil, cache_error
     end
 
-    local curl = options.curl or "curl"
     local tar = options.tar or "tar"
     local make = options.make or "make"
-    local sha256sum = options.sha256sum or "sha256sum"
 
-    if type(curl) ~= "string" or curl == "" or type(tar) ~= "string" or tar == ""
-        or type(make) ~= "string" or make == "" or type(sha256sum) ~= "string" or sha256sum == "" then
-        return nil, "curl, tar, make and sha256sum executable names must be non-empty strings."
+    if type(tar) ~= "string" or tar == "" or type(make) ~= "string" or make == "" then
+        return nil, "tar and make executable names must be non-empty strings."
     end
 
     local source_url = options.source_url or RuntimeManager.DEFAULT_SOURCE_URL
@@ -773,14 +576,14 @@ function RuntimeManager.new(options)
 
     local self = setmetatable({}, RuntimeManager)
     self.cache_dir = cache_dir
-    self.downloads_dir = join_path(cache_dir, "downloads/lua")
-    self.runtimes_dir = join_path(cache_dir, "runtimes/lua")
-    self.build_dir = join_path(cache_dir, "build")
-    self.curl = curl
+    self.downloads_dir = Path.join(cache_dir, "downloads/lua")
+    self.runtimes_dir = Path.join(cache_dir, "runtimes/lua")
+    self.build_dir = Path.join(cache_dir, "build")
     self.tar = tar
     self.make = make
-    self.sha256sum = sha256sum
     self.source_url = source_url
+    self.downloader = options.downloader or Downloader
+    self.checksum = options.checksum or Checksum
 
     return self
 end
@@ -813,8 +616,8 @@ function RuntimeManager:install(requested_version)
 
     if self:is_installed(version) then
         if not exact_version then
-            local mapping_saved, mapping_error = write_file(
-                join_path(self.cache_dir, "metadata/lua-series-" .. series .. ".txt"),
+            local mapping_saved, mapping_error = FileSystem.write_file(
+                Path.join(self.cache_dir, "metadata/lua-series-" .. series .. ".txt"),
                 version .. "\n"
             )
             if not mapping_saved then
@@ -825,11 +628,13 @@ function RuntimeManager:install(requested_version)
         return true, nil, version
     end
 
-    local dirs_created, dirs_error = execute_command(
-        "mkdir -p " .. shell_quote(self.downloads_dir) .. " "
-        .. shell_quote(self.runtimes_dir) .. " "
-        .. shell_quote(self.build_dir)
-    )
+    local dirs_created, dirs_error = FileSystem.make_directory(self.downloads_dir)
+    if dirs_created then
+        dirs_created, dirs_error = FileSystem.make_directory(self.runtimes_dir)
+    end
+    if dirs_created then
+        dirs_created, dirs_error = FileSystem.make_directory(self.build_dir)
+    end
     if not dirs_created then
         return false, string.format("Could not create Artemis cache directories: %s", dirs_error)
     end
@@ -852,8 +657,8 @@ function RuntimeManager:install(requested_version)
     end
 
     if not exact_version then
-        local mapping_saved, mapping_error = write_file(
-            join_path(self.cache_dir, "metadata/lua-series-" .. series .. ".txt"),
+        local mapping_saved, mapping_error = FileSystem.write_file(
+            Path.join(self.cache_dir, "metadata/lua-series-" .. series .. ".txt"),
             version .. "\n"
         )
         if not mapping_saved then
@@ -894,7 +699,7 @@ function RuntimeManager:is_installed(requested_version)
         return false
     end
 
-    return executable_exists(join_path(self.runtimes_dir, version .. "/bin/lua"))
+    return FileSystem.executable_exists(Path.join(self.runtimes_dir, version .. "/bin/lua"))
 end
 
 --- Return the exact cached installation path for a requested release.
@@ -924,8 +729,8 @@ function RuntimeManager:get_install_path(requested_version)
         return nil, string.format("Lua %s has not been resolved yet. Call install() first.", requested_version)
     end
 
-    local path = join_path(self.runtimes_dir, version)
-    if not executable_exists(join_path(path, "bin/lua")) then
+    local path = Path.join(self.runtimes_dir, version)
+    if not FileSystem.executable_exists(Path.join(path, "bin/lua")) then
         return nil, string.format("Lua %s is not installed in the Artemis cache.", version)
     end
 
@@ -946,29 +751,27 @@ function RuntimeManager:get_executable(requested_version)
         return nil, path_error
     end
 
-    return join_path(installation_path, "bin/lua")
+    return Path.join(installation_path, "bin/lua")
 end
 
 --- List exact Lua releases installed in the shared Artemis cache.
 --- @return string[]  versions
 --- @return string?   error_message
 function RuntimeManager:list_installed()
-    if not directory_exists(self.runtimes_dir) then
+    if not FileSystem.directory_exists(self.runtimes_dir) then
         return {}
     end
 
-    local output, list_error = capture_command(
-        "find " .. shell_quote(self.runtimes_dir) .. " -mindepth 1 -maxdepth 1 -type d -print"
-    )
-    if not output then
+    local directories, list_error = FileSystem.list_directories(self.runtimes_dir)
+    if not directories then
         return {}, list_error
     end
 
     local versions = {}
-    for path in output:gmatch("[^\r\n]+") do
-        local version = path:match("([^/]+)$")
+    for _, path in ipairs(directories) do
+        local version = Path.basename(path)
         if version and version:match("^%d+%.%d+%.%d+$")
-            and executable_exists(join_path(path, "bin/lua")) then
+            and FileSystem.executable_exists(Path.join(path, "bin/lua")) then
             versions[#versions + 1] = version
         end
     end
@@ -983,10 +786,10 @@ end
 --- @return string?  version
 --- @return string?  error_message
 function RuntimeManager:_find_installed_series_version(series)
-    local mapping = read_file(join_path(self.cache_dir, "metadata/lua-series-" .. series .. ".txt"))
+    local mapping = FileSystem.read_file(Path.join(self.cache_dir, "metadata/lua-series-" .. series .. ".txt"))
     local mapped_version = mapping and mapping:match("^%s*([%d%.]+)") or nil
     if mapped_version and mapped_version:match("^(%d+%.%d+)%.%d+$") == series
-        and executable_exists(join_path(self.runtimes_dir, mapped_version .. "/bin/lua")) then
+        and FileSystem.executable_exists(Path.join(self.runtimes_dir, mapped_version .. "/bin/lua")) then
         return mapped_version
     end
 
@@ -1037,20 +840,20 @@ function RuntimeManager:uninstall(requested_version)
         return false, string.format("No cached Lua installation was found for '%s'.", requested_version)
     end
 
-    local installation_path = join_path(self.runtimes_dir, version)
-    if not directory_exists(installation_path) then
+    local installation_path = Path.join(self.runtimes_dir, version)
+    if not FileSystem.directory_exists(installation_path) then
         return false, string.format("Lua %s is not installed.", version)
     end
 
-    local removed, remove_error = execute_command("rm -rf " .. shell_quote(installation_path))
+    local removed, remove_error = FileSystem.remove(installation_path)
     if not removed then
         return false, string.format("Could not remove Lua %s: %s", version, remove_error)
     end
 
-    local series_mapping_path = join_path(self.cache_dir, "metadata/lua-series-" .. series .. ".txt")
-    local cached_series_version = read_file(series_mapping_path)
+    local series_mapping_path = Path.join(self.cache_dir, "metadata/lua-series-" .. series .. ".txt")
+    local cached_series_version = FileSystem.read_file(series_mapping_path)
     if not exact_version or (cached_series_version and cached_series_version:match("^%s*([%d%.]+)") == version) then
-        os.remove(series_mapping_path)
+        FileSystem.remove(series_mapping_path)
     end
 
     return true

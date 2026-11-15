@@ -9,7 +9,9 @@
 --- This first implementation invokes the LuaRocks CLI through a POSIX shell.
 --- @module 'artemis.dependency_manager'
 
-local lfs = require("lfs")
+local Path = require("artemis.utils.path")
+local FileSystem = require("artemis.utils.filesystem")
+local Process = require("artemis.utils.process")
 
 --- @class Artemis.DependencyManagerOptions
 --- @field tree?             string  Project-local LuaRocks tree. Defaults to "lua_modules".
@@ -51,151 +53,6 @@ local ROCKSPEC_VERSION = "0.0.0-1"
 --- @type string
 local ROCKSPEC_FILENAME = ROCKSPEC_PACKAGE .. "-" .. ROCKSPEC_VERSION .. ".rockspec"
 
---- Join two paths using the slash convention accepted by LuaRocks on Unix.
---- @param first   string
---- @param second  string
---- @return string
-local function join_path(first, second)
-    if first == "" or first == "." then
-        return first == "." and ("./" .. second) or second
-    end
-
-    return first:gsub("/+$", "") .. "/" .. second:gsub("^/+", "")
-end
-
---- Check whether a path is absolute on Unix or Windows.
---- @param path  string
---- @return boolean
-local function is_absolute_path(path)
-    return path:sub(1, 1) == "/" or path:match("^%a:[/\\]") ~= nil
-end
-
---- Check whether a file exists.
---- @param path  string
---- @return boolean
-local function file_exists(path)
-    local mode = lfs.attributes(path, "mode")
-    return mode == "file"
-end
-
---- Read a complete file without changing it.
---- @param path  string
---- @return string?  contents
---- @return string?  error_message
-local function read_file(path)
-    local file, open_error = io.open(path, "rb")
-    if not file then
-        return nil, open_error
-    end
-
-    local contents = file:read("a") or ""
-    local close_ok, close_error = file:close()
-    if not close_ok then
-        return nil, close_error
-    end
-
-    return contents
-end
-
---- Write complete file contents and check both write and close results.
---- @param path      string
---- @param contents  string
---- @return boolean  success
---- @return string?  error_message
-local function write_file(path, contents)
-    local file, open_error = io.open(path, "wb")
-    if not file then
-        return false, string.format("Could not open '%s' for writing: %s", path, open_error)
-    end
-
-    local write_ok, write_error = file:write(contents)
-    if not write_ok then
-        file:close()
-        return false, string.format("Could not write '%s': %s", path, write_error)
-    end
-
-    local close_ok, close_reason = file:close()
-    if not close_ok then
-        return false, string.format("Could not close '%s': %s", path, close_reason)
-    end
-
-    return true
-end
-
---- Quote a value for use as one argument in a POSIX shell command.
---- The initial Artemis shell runner targets Unix-like environments (including
---- the Nix development shell); Windows command-shell support can be added later.
---- @param value  string
---- @return string
-local function shell_quote(value)
-    return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
-end
-
---- Interpret os.execute/io.popen close results across Lua versions.
---- @param success   true?
---- @param exitcode  "exit"|"signal"?
---- @param code      integer?
---- @return boolean
-local function command_succeeded(success, exitcode, code)
-    if success == true then
-        return true
-    end
-
-    return exitcode == "exit" and code == 0
-end
-
---- Run a command and return its combined standard output and standard error.
---- @param command  string
---- @return string?  output
---- @return string?  error_message
-local function capture_command(command)
-    --- Concatenate command to " 2>&1" to redirect stderr to stdout
-    local handle, open_error = io.popen(command .. " 2>&1", "r")
-    if not handle then
-        return nil, string.format("Could not execute command: %s", open_error)
-    end
-
-    local output = handle:read("a") or ""
-    local success, exitcode, code = handle:close()
-
-    if not command_succeeded(success, exitcode, code) then
-        return nil, string.format(
-            "Command failed (status: %s):\n%s",
-            tostring(code or exitcode or success),
-            output
-        )
-    end
-
-    return output
-end
-
---- Run a command without capturing its output.
---- @param command  string
---- @return boolean  success
---- @return string?  error_message
-local function execute_command(command)
-    local success, exitcode, code = os.execute(command)
-    if command_succeeded(success, exitcode, code) then
-        return true
-    end
-
-    return false, string.format("Command failed (status: %s): %s", tostring(code or exitcode or success), command)
-end
-
-
---- Resolve a directory to an absolute path.
---- @param path  string
---- @return string?  absolute_path
---- @return string?  error_message
-local function absolute_directory(path)
-    local output, command_error = capture_command("cd " .. shell_quote(path) .. " && pwd")
-    if not output then
-        return nil, command_error
-    end
-
-    return output:match("^([^\r\n]+)")
-end
-
 --- Resolve the shared Artemis cache directory to an absolute path.
 --- @param root        string  Absolute project root.
 --- @param requested?  string  Explicit cache directory.
@@ -209,11 +66,11 @@ local function resolve_cache_dir(root, requested)
         local home = os.getenv("HOME")
 
         if xdg_cache_home and xdg_cache_home:match("^/") then
-            candidate = join_path(xdg_cache_home, "artemis")
+            candidate = Path.join(xdg_cache_home, "artemis")
         elseif home and home:match("^/") then
-            candidate = join_path(join_path(home, ".cache"), "artemis")
+            candidate = Path.join(Path.join(home, ".cache"), "artemis")
         else
-            candidate = join_path(root, ".cache/artemis")
+            candidate = Path.join(root, ".cache/artemis")
         end
     end
 
@@ -226,11 +83,11 @@ local function resolve_cache_dir(root, requested)
             return nil, "Cannot expand the cache path because HOME is not an absolute path."
         end
 
-        candidate = candidate == "~" and home or join_path(home, candidate:sub(3))
+        candidate = candidate == "~" and home or Path.join(home, candidate:sub(3))
     elseif candidate:sub(1, 1) == "~" then
         return nil, "Named-user home paths are not supported for the Artemis cache directory."
-    elseif not is_absolute_path(candidate) then
-        candidate = join_path(root, candidate)
+    elseif not Path.is_absolute(candidate) then
+        candidate = Path.join(root, candidate)
     end
 
     candidate = candidate:gsub("/+$", "")
@@ -242,18 +99,18 @@ local function resolve_cache_dir(root, requested)
     if not parent or parent == "" then
         parent = "/"
     end
-    local parent_created, parent_create_error = execute_command("mkdir -p " .. shell_quote(parent))
+    local parent_created, parent_create_error = FileSystem.make_directory(parent)
     if not parent_created then
         return nil, string.format("Could not create Artemis cache parent directory: %s", parent_create_error)
     end
 
-    local absolute_parent, parent_error = absolute_directory(parent)
+    local absolute_parent, parent_error = Path.absolute_directory(parent)
     if not absolute_parent then
         return nil, string.format("Could not resolve Artemis cache directory: %s", parent_error)
     end
 
     local basename = candidate:match("([^/]+)$") or "artemis"
-    return join_path(absolute_parent, basename)
+    return Path.join(absolute_parent, basename)
 end
 
 --- Find an existing LuaRocks configuration that should be preserved.
@@ -274,23 +131,21 @@ local function find_luarocks_configs(root, lua_version, explicit_config)
         candidates[#candidates + 1] = generic_env
     else
         local home = os.getenv("HOME") or ""
-        local xdg = os.getenv("XDG_CONFIG_HOME") or join_path(home, ".config")
-        candidates[#candidates + 1] = join_path(join_path(xdg, "luarocks"), "config-" .. lua_version .. ".lua")
-        candidates[#candidates + 1] = join_path(join_path(home, ".luarocks"), "config-" .. lua_version .. ".lua")
-        candidates[#candidates + 1] = join_path(join_path(xdg, "luarocks"), "config.lua")
-        candidates[#candidates + 1] = join_path(join_path(home, ".luarocks"), "config.lua")
+        local xdg = os.getenv("XDG_CONFIG_HOME") or Path.join(home, ".config")
+        candidates[#candidates + 1] = Path.join(Path.join(xdg, "luarocks"), "config-" .. lua_version .. ".lua")
+        candidates[#candidates + 1] = Path.join(Path.join(home, ".luarocks"), "config-" .. lua_version .. ".lua")
+        candidates[#candidates + 1] = Path.join(Path.join(xdg, "luarocks"), "config.lua")
+        candidates[#candidates + 1] = Path.join(Path.join(home, ".luarocks"), "config.lua")
     end
 
     -- `luarocks init` may provide project-specific settings in this file.
-    candidates[#candidates + 1] = join_path(join_path(root, ".luarocks"), "config-" .. lua_version .. ".lua")
+    candidates[#candidates + 1] = Path.join(Path.join(root, ".luarocks"), "config-" .. lua_version .. ".lua")
 
     local paths = {}
     local seen = {}
     for _, path in ipairs(candidates) do
         if path and path ~= "" and not seen[path] then
-            local file = io.open(path, "rb")
-            if file then
-                file:close()
+            if FileSystem.file_exists(path) then
                 paths[#paths + 1] = path
                 seen[path] = true
             end
@@ -310,12 +165,14 @@ end
 --- @return string?  rocks_cache_dir
 --- @return string?  error_message
 local function create_luarocks_cache_config(root, cache_dir, lua_version, explicit_config, lua_dir)
-    local rocks_cache_dir = join_path(cache_dir, "rocks/downloads")
-    local config_directory = join_path(cache_dir, "luarocks")
-    local config_path = join_path(config_directory, "config-" .. lua_version .. ".lua")
+    local rocks_cache_dir = Path.join(cache_dir, "rocks/downloads")
+    local config_directory = Path.join(cache_dir, "luarocks")
+    local config_path = Path.join(config_directory, "config-" .. lua_version .. ".lua")
 
-    local parent_created, parent_create_error = execute_command("mkdir -p " ..
-        shell_quote(rocks_cache_dir) .. " " .. shell_quote(config_directory))
+    local parent_created, parent_create_error = FileSystem.make_directory(rocks_cache_dir)
+    if parent_created then
+        parent_created, parent_create_error = FileSystem.make_directory(config_directory)
+    end
     if not parent_created then
         return nil,
             string.format("Could not create LuaRocks cache directory '%s': %s.", rocks_cache_dir, parent_create_error)
@@ -337,10 +194,10 @@ local function create_luarocks_cache_config(root, cache_dir, lua_version, explic
     -- Configure LuaRocks to compile native rocks against the exact Lua runtime
     -- selected by Artemis, rather than whichever interpreter happens to be on PATH.
     if lua_dir then
-        local lua_bindir = join_path(lua_dir, "bin")
-        local lua_executable = join_path(lua_bindir, "lua")
-        local lua_include = join_path(lua_dir, "include")
-        local lua_library = join_path(lua_dir, "lib")
+        local lua_bindir = Path.join(lua_dir, "bin")
+        local lua_executable = Path.join(lua_bindir, "lua")
+        local lua_include = Path.join(lua_dir, "include")
+        local lua_library = Path.join(lua_dir, "lib")
 
         lines[#lines + 1] = "variables = variables or {}"
         lines[#lines + 1] = "variables.LUA = " .. string.format("%q", lua_executable)
@@ -352,21 +209,9 @@ local function create_luarocks_cache_config(root, cache_dir, lua_version, explic
 
     lines[#lines + 1] = ""
 
-    local file, open_error = io.open(config_path, "wb")
-    if not file then
-        return nil, nil,
-            string.format("Could not write LuaRocks cache config '%s': %s", config_path, open_error)
-    end
-
-    local write_ok, write_error = file:write(table.concat(lines, "\n"))
-    if not write_ok then
-        file:close()
-        return nil, nil, string.format("Could not write LuaRocks cache config: %s", write_error)
-    end
-
-    local close_ok, close_reason = file:close()
-    if not close_ok then
-        return nil, nil, string.format("Could not close LuaRocks cache config: %s", close_reason)
+    local saved, save_error = FileSystem.write_file(config_path, table.concat(lines, "\n"))
+    if not saved then
+        return nil, nil, string.format("Could not write LuaRocks cache config '%s': %s", config_path, save_error)
     end
 
     return config_path, rocks_cache_dir
@@ -379,21 +224,21 @@ end
 --- @return string?  error_message
 local function execute_luarocks(self, arguments)
     local command_parts = {
-        "cd " .. shell_quote(self.root) .. " &&",
-        "LUAROCKS_CONFIG=" .. shell_quote(self.luarocks_config),
-        "LUAROCKS_CONFIG_" .. self.lua_version:gsub("%.", "_") .. "=" .. shell_quote(self.luarocks_config),
-        shell_quote(self.luarocks),
-        "--tree=" .. shell_quote(self.tree),
-        "--lua-version=" .. shell_quote(self.lua_version)
+        "cd " .. Process.shell_quote(self.root) .. " &&",
+        "LUAROCKS_CONFIG=" .. Process.shell_quote(self.luarocks_config),
+        "LUAROCKS_CONFIG_" .. self.lua_version:gsub("%.", "_") .. "=" .. Process.shell_quote(self.luarocks_config),
+        Process.shell_quote(self.luarocks),
+        "--tree=" .. Process.shell_quote(self.tree),
+        "--lua-version=" .. Process.shell_quote(self.lua_version)
     }
 
     for _, argument in ipairs(arguments) do
-        command_parts[#command_parts + 1] = shell_quote(argument)
+        command_parts[#command_parts + 1] = Process.shell_quote(argument)
     end
 
     local command = table.concat(command_parts, " ")
 
-    local success, run_error = execute_command(command)
+    local success, run_error = Process.execute(command)
     if not success then
         return false, string.format("Could not start LuaRocks: %s", run_error)
     end
@@ -408,20 +253,20 @@ end
 --- @return string?  error_message
 local function capture_luarocks(self, arguments)
     local command_parts = {
-        "cd " .. shell_quote(self.root) .. " &&",
-        "LUAROCKS_CONFIG=" .. shell_quote(self.luarocks_config),
-        "LUAROCKS_CONFIG_" .. self.lua_version:gsub("%.", "_") .. "=" .. shell_quote(self.luarocks_config),
-        shell_quote(self.luarocks),
-        "--tree=" .. shell_quote(self.tree),
-        "--lua-version=" .. shell_quote(self.lua_version)
+        "cd " .. Process.shell_quote(self.root) .. " &&",
+        "LUAROCKS_CONFIG=" .. Process.shell_quote(self.luarocks_config),
+        "LUAROCKS_CONFIG_" .. self.lua_version:gsub("%.", "_") .. "=" .. Process.shell_quote(self.luarocks_config),
+        Process.shell_quote(self.luarocks),
+        "--tree=" .. Process.shell_quote(self.tree),
+        "--lua-version=" .. Process.shell_quote(self.lua_version)
     }
 
     for _, argument in ipairs(arguments) do
-        command_parts[#command_parts + 1] = shell_quote(argument)
+        command_parts[#command_parts + 1] = Process.shell_quote(argument)
     end
     local command = table.concat(command_parts, " ")
 
-    local output, run_error = capture_command(command)
+    local output, run_error = Process.capture(command)
     if not output then
         return nil, string.format("Could not start LuaRocks: %s", run_error)
     end
@@ -552,29 +397,29 @@ end
 --- @return boolean  success
 --- @return string?  error_message
 local function with_native_lockfile(self, contents, callback)
-    local lock_path = join_path(self.root, "luarocks.lock")
+    local lock_path = Path.join(self.root, "luarocks.lock")
     local temporary_path = lock_path .. ".artemis-tmp"
-    local had_previous = file_exists(lock_path)
+    local had_previous = FileSystem.file_exists(lock_path)
     local previous_contents
 
     if had_previous then
         local read_error
-        previous_contents, read_error = read_file(lock_path)
+        previous_contents, read_error = FileSystem.read_file(lock_path)
         if previous_contents == nil then
             return false, string.format("Could not preserve existing '%s': %s", lock_path, read_error)
         end
     end
 
-    os.remove(temporary_path)
-    local staged, stage_error = write_file(temporary_path, contents)
+    FileSystem.remove(temporary_path)
+    local staged, stage_error = FileSystem.write_file(temporary_path, contents)
     if not staged then
-        os.remove(temporary_path)
+        FileSystem.remove(temporary_path)
         return false, string.format("Could not stage LuaRocks lockfile: %s", stage_error)
     end
 
-    local moved, move_error = os.rename(temporary_path, lock_path)
+    local moved, move_error = FileSystem.rename(temporary_path, lock_path)
     if not moved then
-        os.remove(temporary_path)
+        FileSystem.remove(temporary_path)
         return false, string.format("Could not activate temporary LuaRocks lockfile: %s", move_error)
     end
 
@@ -583,18 +428,18 @@ local function with_native_lockfile(self, contents, callback)
     local restored, restore_error
     if had_previous then
         local restore_temp = lock_path .. ".artemis-restore-tmp"
-        os.remove(restore_temp)
-        restored, restore_error = write_file(restore_temp, previous_contents)
+        FileSystem.remove(restore_temp)
+        restored, restore_error = FileSystem.write_file(restore_temp, previous_contents)
         if restored then
-            restored, restore_error = os.rename(restore_temp, lock_path)
+            restored, restore_error = FileSystem.rename(restore_temp, lock_path)
         end
         if not restored then
-            os.remove(restore_temp)
+            FileSystem.remove(restore_temp)
         end
     else
-        restored, restore_error = os.remove(lock_path)
+        restored, restore_error = FileSystem.remove(lock_path)
         if restored == nil then
-            restored = not file_exists(lock_path)
+            restored = not FileSystem.file_exists(lock_path)
         end
     end
 
@@ -657,31 +502,17 @@ function DependencyManager:_write_dependency_rockspec()
     lines[#lines + 1] = "build = { type = \"none\" }"
     lines[#lines + 1] = ""
 
-    local directory = join_path(self.root, self.metadata_dir)
-    local parent_created, parent_create_error = execute_command("mkdir -p " .. shell_quote(directory))
+    local directory = Path.join(self.root, self.metadata_dir)
+    local parent_created, parent_create_error = FileSystem.make_directory(directory)
     if not parent_created then
         return nil, string.format("Could not create Artemis metadata directory '%s': %s", directory, parent_create_error)
     end
 
-    local relative_path = join_path(self.metadata_dir, ROCKSPEC_FILENAME)
-    local absolute_path = join_path(self.root, relative_path)
-    local file, open_error = io.open(absolute_path, "wb")
-
-    if not file then
-        return nil, string.format("Could not write generated rockspec '%s': %s", absolute_path, open_error)
-    end
-
-    local write_ok, write_error = file:write(table.concat(lines, "\n"))
-    if not write_ok then
-        file:close()
-        os.remove(absolute_path)
-        return nil, string.format("Could not write generated rockspec '%s': %s", absolute_path, write_error)
-    end
-
-    local close_ok, close_reason = file:close()
-    if not close_ok then
-        os.remove(absolute_path)
-        return nil, string.format("Could not close generated rockspec '%s': %s", absolute_path, close_reason)
+    local relative_path = Path.join(self.metadata_dir, ROCKSPEC_FILENAME)
+    local absolute_path = Path.join(self.root, relative_path)
+    local saved, save_error = FileSystem.write_file(absolute_path, table.concat(lines, "\n"))
+    if not saved then
+        return nil, string.format("Could not write generated rockspec '%s': %s", absolute_path, save_error)
     end
 
     return relative_path
@@ -708,7 +539,7 @@ function DependencyManager.new(project_root, manifest, options)
     if type(options) ~= "table" then
         return nil, "DependencyManager options must be a table."
     end
-    local root, root_error = absolute_directory(project_root)
+    local root, root_error = Path.absolute_directory(project_root)
     if not root then
         return nil, string.format("Could not resolve project root directory: %s", root_error)
     end
@@ -718,20 +549,20 @@ function DependencyManager.new(project_root, manifest, options)
         return nil, "Manifest path must be a non-empty string."
     end
 
-    if not is_absolute_path(manifest_path) then
+    if not Path.is_absolute(manifest_path) then
         local normalized_root = root:gsub("/+$", "")
         local already_rooted = normalized_root ~= ""
             and manifest_path:sub(1, #normalized_root + 1) == normalized_root .. "/"
 
         if not already_rooted then
-            manifest_path = join_path(root, manifest_path)
+            manifest_path = Path.join(root, manifest_path)
         end
     end
 
-    local local_wrapper = join_path(root, "luarocks")
+    local local_wrapper = Path.join(root, "luarocks")
     local luarocks = options.luarocks
     if not luarocks then
-        luarocks = file_exists(local_wrapper) and "./luarocks" or "luarocks"
+        luarocks = FileSystem.file_exists(local_wrapper) and "./luarocks" or "luarocks"
     end
 
     local lua_version = options.lua_version or (manifest.data and manifest.data.lua)
@@ -757,7 +588,7 @@ function DependencyManager.new(project_root, manifest, options)
     end
 
     local metadata_dir = options.metadata_dir or ".artemis"
-    if type(metadata_dir) ~= "string" or not metadata_dir:match("%S") or is_absolute_path(metadata_dir) then
+    if type(metadata_dir) ~= "string" or not metadata_dir:match("%S") or Path.is_absolute(metadata_dir) then
         return nil, "Artemis metadata directory must be a non-empty relative path."
     end
 
@@ -866,7 +697,7 @@ function DependencyManager:sync(locked_dependencies)
         success, install_error = install_dependencies()
     end
 
-    os.remove(join_path(self.root, rockspec_path))
+    FileSystem.remove(Path.join(self.root, rockspec_path))
 
     if not success then
         return false, install_error

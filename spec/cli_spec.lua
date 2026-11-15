@@ -1,5 +1,6 @@
 --- @diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil, duplicate-set-field
 local CLI = require("artemis.cli")
+local FileSystem = require("artemis.utils.filesystem")
 local RuntimeManager = require("artemis.runtime_manager")
 local Manifest = require("artemis.manifest")
 local helpers = require("spec.helpers")
@@ -122,8 +123,8 @@ local function make_services(project)
 end
 
 local function make_directory(path)
-    local first, second, third = os.execute("mkdir -p " .. helpers.shell_quote(path))
-    assert.is_true(helpers.command_succeeded(first, second, third))
+    local created, create_error = FileSystem.make_directory(path)
+    assert.is_true(created, create_error)
 end
 
 local function write_project_manifest(directory, manifest_name, project_name)

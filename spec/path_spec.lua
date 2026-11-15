@@ -1,0 +1,27 @@
+--- @diagnostic disable: undefined-global, undefined-field
+local Path = require("artemis.utils.path")
+local helpers = require("spec.helpers")
+
+describe("artemis.path", function()
+    it("joins relative and absolute paths", function()
+        assert.equals("project/src/main.lua", Path.join("project", "src/main.lua"))
+        assert.equals("./src/main.lua", Path.join(".", "src/main.lua"))
+        assert.equals("/tmp/project", Path.join("/tmp", "/tmp/project"))
+    end)
+
+    it("returns parent and basename components", function()
+        assert.equals("project/src", Path.parent("project/src/main.lua"))
+        assert.equals(".", Path.parent("main.lua"))
+        assert.equals("/", Path.parent("/main.lua"))
+        assert.equals("main.lua", Path.basename("project/src/main.lua"))
+    end)
+
+    it("resolves an existing directory without leaving the working directory changed", function()
+        helpers.with_temp_dir(function(root)
+            local original = assert(require("lfs").currentdir())
+            local absolute = assert(Path.absolute_directory(root))
+            assert.equals(root, absolute)
+            assert.equals(original, require("lfs").currentdir())
+        end)
+    end)
+end)

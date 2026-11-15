@@ -10,7 +10,9 @@ local Manifest = require("artemis.manifest")
 local RuntimeManager = require("artemis.runtime_manager")
 local DependencyManager = require("artemis.dependency_manager")
 local Lockfile = require("artemis.lockfile")
-local lfs = require("lfs")
+local Path = require("artemis.utils.path")
+local FileSystem = require("artemis.utils.filesystem")
+local Process = require("artemis.utils.process")
 
 --- @class Artemis.ProjectOptions
 --- @field manifest_path?       string                            Path to the project manifest. Defaults to artemis-project.toml.
@@ -45,105 +47,6 @@ Project.__index = Project
 
 ------------------------------------ Local Functions ------------------------------------
 
---- Join two filesystem paths using Unix separators.
---- @param first   string
---- @param second  string
---- @return string
-local function join_path(first, second)
-    if first == "" then
-        local ret = second:gsub("^/+", "")
-        return ret
-    end
-
-    return first:gsub("/+$", "") .. "/" .. second:gsub("^/+", "")
-end
-
---- Check whether a path is absolute on Unix or Windows.
---- @param path  string
---- @return boolean
-local function is_absolute_path(path)
-    return path:sub(1, 1) == "/" or path:match("^%a:[/\\]") ~= nil
-end
-
---- Quote a value as one POSIX shell argument.
---- @param value  string
---- @return string
-local function shell_quote(value)
-    return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
-end
-
---- Interpret os.execute/io.popen close results across Lua versions.
---- @param success   true?
---- @param exitcode  "exit"|"signal"?
---- @param code      integer?
---- @return boolean
-local function command_succeeded(success, exitcode, code)
-    if success == true then
-        return true
-    end
-
-    return exitcode == "exit" and code == 0
-end
-
---- Run a command without capturing its output.
---- @param command  string
---- @return boolean  success
---- @return string?  error_message
-local function execute_command(command)
-    local success, exitcode, code = os.execute(command)
-    if command_succeeded(success, exitcode, code) then
-        return true
-    end
-
-    return false, string.format("Command failed (status: %s): %s", tostring(code or exitcode or success), command)
-end
-
---- Run a command and return its combined standard output and standard error.
---- @param command  string
---- @return string?  output
---- @return string?  error_message
-local function capture_command(command)
-    --- Concatenate command to " 2>&1" to redirect stderr to stdout
-    local handle, open_error = io.popen(command .. " 2>&1", "r")
-    if not handle then
-        return nil, string.format("Could not execute command: %s", open_error)
-    end
-
-    local output = handle:read("a") or ""
-    local success, exitcode, code = handle:close()
-
-    if not command_succeeded(success, exitcode, code) then
-        return nil, string.format(
-            "Command failed (status: %s):\n%s",
-            tostring(code or exitcode or success),
-            output
-        )
-    end
-
-    return output
-end
-
---- Resolve a directory to an absolute path.
---- @param path  string
---- @return string?  absolute_path
---- @return string?  error_message
-local function absolute_directory(path)
-    local output, command_error = capture_command("cd " .. shell_quote(path) .. " && pwd")
-    if not output then
-        return nil, command_error
-    end
-
-    return output:match("^([^\r\n]+)")
-end
-
---- Check whether a file exists.
---- @param path  string
---- @return boolean
-local function file_exists(path)
-    local mode = lfs.attributes(path, "mode")
-    return mode == "file"
-end
-
 --- Copy a shallow options table so callers' tables are not modified.
 --- @param source?  table
 --- @return table
@@ -162,11 +65,11 @@ end
 --- @param path  string
 --- @return string
 local function project_path(root, path)
-    if is_absolute_path(path) then
+    if Path.is_absolute(path) then
         return path
     end
 
-    return join_path(root, path)
+    return Path.join(root, path)
 end
 
 -----------------------------------------------------------------------------------------
@@ -193,7 +96,7 @@ function Project.new(project_root, options)
         return nil, "Project options must be a table."
     end
 
-    local root = absolute_directory(project_root)
+    local root = Path.absolute_directory(project_root)
     if not root then
         return nil, string.format("Project directory '%s' does not exist or cannot be accessed.", project_root)
     end
@@ -237,7 +140,7 @@ function Project.new(project_root, options)
     local lockfile_path = project_path(root, requested_lockfile_path)
 
     local metadata_dir = options.metadata_dir or ".artemis"
-    if type(metadata_dir) ~= "string" or not metadata_dir:match("%S") or is_absolute_path(metadata_dir) then
+    if type(metadata_dir) ~= "string" or not metadata_dir:match("%S") or Path.is_absolute(metadata_dir) then
         return nil, "metadata_dir must be a non-empty relative path."
     end
 
@@ -275,21 +178,6 @@ function Project.new(project_root, options)
     self.metadata_dir = metadata_dir
     self._dependency_options = dependency_options
 
-    -- If the required runtime is already cached, configure LuaRocks for it now.
-    -- A missing runtime is not an initialization error; sync() will install it.
-    local cached_runtime_path = runtime_manager:get_install_path()
-    local dependency_manager, dependency_error = self:_create_dependency_manager(cached_runtime_path)
-    if not dependency_manager then
-        return nil, dependency_error
-    end
-
-    self.dependency_manager = dependency_manager
-    if cached_runtime_path then
-        self.runtime_path = cached_runtime_path
-        self.runtime_version = cached_runtime_path:match("([^/]+)$")
-        self.lua_executable = join_path(cached_runtime_path, "bin/lua")
-    end
-
     return self
 end
 
@@ -322,7 +210,7 @@ function Project:install_runtime(requested_version)
     requested_version = requested_version or self.manifest.data.lua
 
     local installed, install_error, version = self.runtime_manager:install(requested_version)
-    if not installed then
+    if not installed or not version then
         return false, install_error
     end
 
@@ -365,7 +253,7 @@ function Project:sync()
     end
 
     local active_lockfile
-    if file_exists(self.lockfile_path) then
+    if FileSystem.file_exists(self.lockfile_path) then
         local loaded_lockfile, load_error = Lockfile.load(self.lockfile_path)
         if not loaded_lockfile then
             return false,
@@ -398,21 +286,6 @@ function Project:sync()
         local versions_match, version_error = self.dependency_manager:verify_locked(locked_dependencies)
         if not versions_match then
             return false, version_error
-        end
-
-        -- Older lockfiles may not contain an exact runtime release. Fill it in
-        -- after selecting the runtime so subsequent syncs are fully reproducible.
-        if not active_lockfile.data.project.runtime then
-            local runtime_saved, runtime_save_error = active_lockfile:set_runtime_version(version)
-            if not runtime_saved then
-                return false, runtime_save_error
-            end
-
-            local saved, save_error = active_lockfile:save(self.lockfile_path)
-            if not saved then
-                return false,
-                    string.format("Dependencies were installed, but the lockfile could not be updated: %s", save_error)
-            end
         end
 
         self.lockfile = active_lockfile
@@ -531,7 +404,7 @@ function Project:run(script, args)
     end
 
     local script_path = project_path(self.root, script)
-    if not file_exists(script_path) then
+    if not FileSystem.file_exists(script_path) then
         return false, string.format("Script '%s' does not exist.", script)
     end
 
@@ -546,18 +419,18 @@ function Project:run(script, args)
     end
 
     local command_parts = {
-        "cd " .. shell_quote(self.root) .. " &&",
-        "eval " .. shell_quote(path_exports),
+        "cd " .. Process.shell_quote(self.root) .. " &&",
+        "eval " .. Process.shell_quote(path_exports),
         "&& exec",
-        shell_quote(self.lua_executable),
-        shell_quote(script_path)
+        Process.shell_quote(self.lua_executable),
+        Process.shell_quote(script_path)
     }
 
     for _, argument in ipairs(args) do
-        command_parts[#command_parts + 1] = shell_quote(argument)
+        command_parts[#command_parts + 1] = Process.shell_quote(argument)
     end
 
-    return execute_command(table.concat(command_parts, " "))
+    return Process.execute(table.concat(command_parts, " "))
 end
 
 --- Alias for add_dependency().

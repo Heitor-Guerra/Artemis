@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
+--- @diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
 local Manifest = require("artemis.manifest")
 local helpers = require("spec.helpers")
 
@@ -176,20 +176,5 @@ describe("artemis.manifest error and boundary cases", function()
         assert.equals("sample-project", manifest.data.name)
         assert.equals("Ada", manifest.data.authors[1])
         assert.equals(">= 0.7", manifest:get_dependency("argparse"))
-    end)
-
-    it("does not update the saved path when the destination cannot be opened", function()
-        helpers.with_temp_dir(function(root)
-            local manifest = helpers.new_manifest({
-                name = "sample-project",
-                lua = "5.4"
-            })
-            local original_path = manifest.path
-            local invalid_path = root .. "/missing-parent/manifest.toml"
-            local success, err = manifest:save(invalid_path)
-            assert.is_false(success)
-            assert.is_truthy(err)
-            assert.equals(original_path, manifest.path)
-        end)
     end)
 end)

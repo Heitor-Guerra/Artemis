@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
+--- @diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
 local Project = require("artemis.project")
 local Lockfile = require("artemis.lockfile")
 local helpers = require("spec.helpers")
@@ -79,7 +79,7 @@ describe("Artemis end-to-end project workflows", function()
     local function make_fake_runtime(project, version, argument_capture, exit_status)
         local runtime_directory = project.runtime_manager.runtimes_dir .. "/" .. version
         local executable = runtime_directory .. "/bin/lua"
-        os.execute("mkdir -p " .. helpers.shell_quote(runtime_directory .. "/bin"))
+        helpers.make_directory(runtime_directory .. "/bin")
 
         helpers.write_file(executable, table.concat({
             "#!/bin/sh",
@@ -98,9 +98,7 @@ describe("Artemis end-to-end project workflows", function()
             manifest = manifest,
             cache_dir = root .. "/shared-cache",
             luarocks = luarocks,
-            runtime_options = {
-                sha256sum = "sha256sum"
-            }
+            runtime_options = {}
         })
         assert.is_truthy(project, err)
 
@@ -159,9 +157,7 @@ describe("Artemis end-to-end project workflows", function()
             local project, project_error = Project.new(root, {
                 cache_dir = root .. "/shared-cache",
                 luarocks = luarocks,
-                runtime_options = {
-                    sha256sum = "sha256sum"
-                }
+                runtime_options = {}
             })
             assert.is_truthy(project, project_error)
             assert.equals(manifest_path, project.manifest_path)
@@ -190,7 +186,8 @@ describe("Artemis end-to-end project workflows", function()
             local first_root = root .. "/first-project"
             local second_root = root .. "/second-project"
             local shared_cache = root .. "/shared-cache"
-            os.execute("mkdir -p " .. helpers.shell_quote(first_root) .. " " .. helpers.shell_quote(second_root))
+            helpers.make_directory(first_root)
+            helpers.make_directory(second_root)
 
             local first_luarocks = make_fake_luarocks(first_root)
             local second_luarocks = make_fake_luarocks(second_root)
@@ -198,7 +195,7 @@ describe("Artemis end-to-end project workflows", function()
                 manifest = make_manifest(),
                 cache_dir = shared_cache,
                 luarocks = first_luarocks,
-                runtime_options = { sha256sum = "sha256sum" }
+                runtime_options = {}
             })
             assert.is_truthy(first_project, first_error)
 
@@ -206,13 +203,13 @@ describe("Artemis end-to-end project workflows", function()
                 manifest = make_manifest(),
                 cache_dir = shared_cache,
                 luarocks = second_luarocks,
-                runtime_options = { sha256sum = "sha256sum" }
+                runtime_options = {}
             })
             assert.is_truthy(second_project, second_error)
             assert.equals(first_project.runtime_manager.cache_dir, second_project.runtime_manager.cache_dir)
 
             local executable = first_project.runtime_manager.runtimes_dir .. "/5.4.9/bin/lua"
-            os.execute("mkdir -p " .. helpers.shell_quote(executable:match("^(.*)/lua$")))
+            helpers.make_directory(executable:match("^(.*)/lua$"))
             helpers.write_file(executable, "#!/bin/sh\necho Lua 5.4.9\n")
             helpers.make_executable(executable)
 
