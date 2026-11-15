@@ -14,17 +14,26 @@ describe("artemis.project", function()
 
     local function make_project(root, manifest, installed_rocks)
         local dependency_manager = {
-            sync_calls = {},
+            install_calls = {},
             verify_calls = {}
         }
 
-        function dependency_manager:sync(locked_dependencies)
-            self.sync_calls[#self.sync_calls + 1] = locked_dependencies
+        function dependency_manager:install(dependencies, exact_versions)
+            self.install_calls[#self.install_calls + 1] = {
+                dependencies = dependencies,
+                exact_versions = exact_versions
+            }
             return true
         end
 
-        function dependency_manager:verify_locked(locked_dependencies)
-            self.verify_calls[#self.verify_calls + 1] = locked_dependencies
+        function dependency_manager:verify_versions(exact_versions)
+            self.verify_calls[#self.verify_calls + 1] = exact_versions
+            return true
+        end
+
+        function dependency_manager:uninstall(package_name)
+            self.uninstall_calls = self.uninstall_calls or {}
+            self.uninstall_calls[#self.uninstall_calls + 1] = package_name
             return true
         end
 
@@ -90,9 +99,14 @@ describe("artemis.project", function()
             assert.is_true(success, err)
             assert.equals("5.4.9", version)
             assert.equals("5.4.9", runtime_manager.install_calls[1])
-            assert.equals("0.7.2-1", dependency_manager.sync_calls[1].argparse.version)
-            assert.equals("0.3.0-1", dependency_manager.sync_calls[1].luasystem.version)
-            assert.same(dependency_manager.sync_calls[1], dependency_manager.verify_calls[1])
+            assert.same({
+                { name = "argparse", constraint = ">= 0.7" }
+            }, dependency_manager.install_calls[1].dependencies)
+            assert.same({
+                argparse = "0.7.2-1",
+                luasystem = "0.3.0-1"
+            }, dependency_manager.install_calls[1].exact_versions)
+            assert.same(dependency_manager.install_calls[1].exact_versions, dependency_manager.verify_calls[1])
         end)
     end)
 
@@ -107,7 +121,7 @@ describe("artemis.project", function()
             local success, err, version = project:sync()
             assert.is_true(success, err)
             assert.equals("5.4.9", version)
-            assert.is_nil(dependency_manager.sync_calls[1])
+            assert.is_nil(dependency_manager.install_calls[1].exact_versions)
 
             local saved_lockfile, load_error = Lockfile.load(project.lockfile_path)
             assert.is_truthy(saved_lockfile, load_error)
@@ -152,7 +166,10 @@ describe("artemis.project", function()
 
             local success, err = project:sync()
             assert.is_true(success, err)
-            assert.is_nil(dependency_manager.sync_calls[1])
+            assert.is_nil(dependency_manager.install_calls[1].exact_versions)
+            assert.same({
+                { name = "argparse", constraint = ">= 0.8" }
+            }, dependency_manager.install_calls[1].dependencies)
 
             local refreshed = assert(Lockfile.load(project.lockfile_path))
             assert.equals(">= 0.8", refreshed:get_dependency("argparse").constraint)
@@ -193,8 +210,8 @@ describe("artemis.project", function()
             local script_path = root .. "/main.lua"
             helpers.write_file(script_path, "print('not executed')\n")
 
-            dependency_manager.sync = function()
-                return false, "simulated dependency resolution failure"
+            dependency_manager.install = function()
+                return false, "simulated dependency installation failure"
             end
 
             local path_calls = 0
@@ -205,7 +222,7 @@ describe("artemis.project", function()
 
             local success, err = project:run("main.lua")
             assert.is_false(success)
-            assert.matches("simulated dependency resolution failure", err)
+            assert.matches("simulated dependency installation failure", err)
             assert.equals(0, path_calls)
         end)
     end)
@@ -238,7 +255,7 @@ describe("artemis.project", function()
         end)
     end)
 
-    it("loads the default manifest and constructs both managers", function()
+    it("loads the default manifest and defers dependency-manager configuration until runtime selection", function()
         helpers.with_temp_dir(function(root)
             local manifest = make_manifest(">= 0.7")
             assert.is_true(manifest:save(root .. "/artemis-project.toml"))
@@ -254,6 +271,7 @@ describe("artemis.project", function()
             assert.equals(root .. "/artemis-project.toml", project.manifest_path)
             assert.equals(root .. "/artemis-project.lock", project.lockfile_path)
             assert.is_truthy(project.runtime_manager)
+            assert.is_nil(project.dependency_manager)
             assert.equals(root .. "/shared-cache", project.runtime_manager.cache_dir)
             assert.is_nil(project.runtime_manager.project_root)
             assert.is_nil(project.runtime_manager.project_runtime_file)
@@ -272,47 +290,54 @@ describe("artemis.project", function()
         end)
     end)
 
-    it("adds dependencies only after the runtime is ready and exposes safe dependency copies", function()
+    it("converts a new declaration into a dependency value after the runtime is ready", function()
         helpers.with_temp_dir(function(root)
             local project, dependency_manager, runtime_manager = make_project(root, make_manifest())
-            local add_call
-            dependency_manager.add = function(_, package_name, constraint)
-                add_call = { package_name, constraint }
-                return true
-            end
 
             local success, err = project:add_dependency("argparse", ">= 0.7")
             assert.is_true(success, err)
             assert.equals(1, #runtime_manager.install_calls)
-            assert.same({ "argparse", ">= 0.7" }, add_call)
+            assert.same({
+                { name = "argparse", constraint = ">= 0.7" }
+            }, dependency_manager.install_calls[1].dependencies)
+            assert.is_nil(dependency_manager.install_calls[1].exact_versions)
+            assert.equals(">= 0.7", project.manifest:get_dependency("argparse"))
 
             local dependencies = project:get_dependencies()
             dependencies.argparse = "*"
+            assert.equals(">= 0.7", project.manifest:get_dependency("argparse"))
+        end)
+    end)
+
+    it("rolls back a new manifest declaration when dependency installation fails", function()
+        helpers.with_temp_dir(function(root)
+            local project, dependency_manager, runtime_manager = make_project(root, make_manifest())
+            dependency_manager.install = function()
+                return false, "simulated installation failure"
+            end
+
+            local success, err = project:add_dependency("argparse", ">= 0.7")
+            assert.is_false(success)
+            assert.matches("simulated installation failure", err)
+            assert.equals(1, #runtime_manager.install_calls)
             assert.is_nil(project.manifest:get_dependency("argparse"))
         end)
     end)
 
-    it("removes dependencies without installing a runtime and exposes the legacy aliases", function()
+    it("removes declarations in Project and delegates only rock uninstallation", function()
         helpers.with_temp_dir(function(root)
             local manifest = make_manifest("0.7.2-1")
             local project, dependency_manager, runtime_manager = make_project(root, manifest)
-            local removed
-            dependency_manager.remove = function(_, package_name)
-                removed = package_name
-                return true
-            end
-            dependency_manager.add = function(_, package_name, constraint)
-                return true, package_name .. ":" .. tostring(constraint)
-            end
 
-            local success, err = project:remove("argparse")
+            local success, err = project:remove_dependency("argparse")
             assert.is_true(success, err)
-            assert.equals("argparse", removed)
+            assert.same({ "argparse" }, dependency_manager.uninstall_calls)
             assert.equals(0, #runtime_manager.install_calls)
+            assert.is_nil(project.manifest:get_dependency("argparse"))
 
-            success, err = project:add("luasystem", "0.7.1-1")
-            assert.is_true(success, err)
-            assert.equals(1, #runtime_manager.install_calls)
+            success, err = project:remove_dependency("argparse")
+            assert.is_false(success)
+            assert.matches("not declared", err)
         end)
     end)
 
@@ -365,8 +390,9 @@ describe("artemis.project failure handling", function()
                 end
             },
             dependency_manager = {
-                sync = function() return true end,
-                verify_locked = function() return true end,
+                install = function() return true end,
+                verify_versions = function() return true end,
+                uninstall = function() return true end,
                 list_installed = function()
                     return { { name = "argparse", version = "0.7.2-1" } }
                 end,
@@ -397,7 +423,7 @@ describe("artemis.project failure handling", function()
     it("stops synchronization when dependency installation fails", function()
         helpers.with_temp_dir(function(root)
             local project = make_project(root)
-            project.dependency_manager.sync = function()
+            project.dependency_manager.install = function()
                 return false, "simulated rock installation error"
             end
 
@@ -417,7 +443,7 @@ describe("artemis.project failure handling", function()
             assert.is_true(lockfile:save(root .. "/artemis-project.lock"))
 
             local project = make_project(root)
-            project.dependency_manager.verify_locked = function()
+            project.dependency_manager.verify_versions = function()
                 return false, "simulated locked version mismatch"
             end
 
