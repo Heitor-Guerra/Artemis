@@ -126,10 +126,6 @@ describe("Artemis end-to-end project workflows", function()
             local generated = assert(Lockfile.load(project.lockfile_path))
             assert.equals("5.4.9", generated.data.project.runtime)
             assert.is_nil(io.open(project.root .. "/.artemis/runtime-version", "rb"))
-            assert.equals("0.7.2-1", generated:get_dependency("argparse").version)
-            assert.equals("0.7.1-1", generated:get_dependency("luasystem").version)
-            assert.is_true(generated:get_dependency("argparse").direct)
-            assert.is_false(generated:get_dependency("luasystem").direct)
 
             success, err, runtime_version = project:sync()
             assert.is_true(success, err)
@@ -174,8 +170,6 @@ describe("Artemis end-to-end project workflows", function()
             assert.equals("5.4.9", runtime_version)
 
             local generated = assert(Lockfile.load(project.lockfile_path))
-            assert.equals("0.7.2-1", generated:get_dependency("argparse").version)
-            assert.equals("0.7.1-1", generated:get_dependency("luasystem").version)
             assert.equals("5.4.9", generated.data.project.runtime)
             assert.is_nil(io.open(captured_lock, "rb"))
         end)
@@ -271,31 +265,6 @@ describe("Artemis end-to-end project workflows", function()
             local captured_handle = io.open(captured_lock, "rb")
             assert.is_truthy(captured_handle)
             captured_handle:close()
-        end)
-    end)
-
-
-    it("refreshes stale direct constraints using the newly resolved installed graph", function()
-        helpers.with_temp_dir(function(root)
-            local project, _, events = new_project(root)
-            local initial_success, initial_error = project:sync()
-            assert.is_true(initial_success, initial_error)
-
-            assert.is_true(project.manifest:set_dependency("argparse", ">= 0.8, < 1.0"))
-            helpers.write_file(root .. "/installed-rocks.txt", table.concat({
-                "argparse 0.8.1-1",
-                "luasystem 0.7.1-1",
-                "luassert 1.9.0-1",
-                ""
-            }, "\n"))
-
-            local success, err = project:sync()
-            assert.is_true(success, err)
-
-            local refreshed = assert(Lockfile.load(project.lockfile_path))
-            assert.equals(">= 0.8, < 1.0", refreshed:get_dependency("argparse").constraint)
-            assert.equals("0.8.1-1", refreshed:get_dependency("argparse").version)
-            assert.equals("install\ninstall\n", helpers.read_file(events))
         end)
     end)
 

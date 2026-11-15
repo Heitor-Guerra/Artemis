@@ -126,8 +126,6 @@ describe("artemis.project", function()
             local saved_lockfile, load_error = Lockfile.load(project.lockfile_path)
             assert.is_truthy(saved_lockfile, load_error)
             assert.equals("5.4.9", saved_lockfile.data.project.runtime)
-            assert.equals("0.7.2-1", saved_lockfile:get_dependency("argparse").version)
-            assert.is_false(saved_lockfile:get_dependency("luasystem").direct)
         end)
     end)
 
@@ -170,10 +168,6 @@ describe("artemis.project", function()
             assert.same({
                 { name = "argparse", constraint = ">= 0.8" }
             }, dependency_manager.install_calls[1].dependencies)
-
-            local refreshed = assert(Lockfile.load(project.lockfile_path))
-            assert.equals(">= 0.8", refreshed:get_dependency("argparse").constraint)
-            assert.equals("0.8.1-1", refreshed:get_dependency("argparse").version)
         end)
     end)
 

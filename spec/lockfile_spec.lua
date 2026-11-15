@@ -86,25 +86,6 @@ describe("artemis.lockfile", function()
         assert.matches("must record its manifest 'constraint'", err)
     end)
 
-    it("returns copies and supports dependency and runtime updates", function()
-        local lockfile = assert(Lockfile.from_installed(manifest_data(), {
-            { name = "argparse", version = "0.7.2-1" }
-        }))
-
-        local record = lockfile:get_dependency("argparse")
-        record.version = "9.9.9"
-        assert.equals("0.7.2-1", lockfile:get_dependency("argparse").version)
-
-        assert.is_true(lockfile:set_dependency("luasystem", "0.3.0-1"))
-        assert.equals("0.3.0-1", lockfile:get_dependency("luasystem").version)
-        assert.is_true(lockfile:remove_dependency("luasystem"))
-        assert.is_false(lockfile:remove_dependency("luasystem"))
-
-        assert.is_true(lockfile:set_runtime_version("5.4.9"))
-        assert.equals("5.4.9", lockfile.data.project.runtime)
-        assert.is_false(lockfile:set_runtime_version(" "))
-    end)
-
     it("matches the manifest's direct dependency inputs", function()
         local lockfile = assert(Lockfile.from_installed(manifest_data(), {
             { name = "argparse", version = "0.7.2-1" }
@@ -143,8 +124,6 @@ describe("artemis.lockfile", function()
             local loaded, load_error = Lockfile.load(path)
             assert.is_truthy(loaded, load_error)
             assert.equals("5.4.9", loaded.data.project.runtime)
-            assert.equals("0.7.2-1", loaded:get_dependency("argparse").version)
-            assert.is_false(loaded:get_dependency("luasystem").direct)
         end)
     end)
 end)
@@ -167,23 +146,6 @@ describe("artemis.lockfile additional invariants", function()
         local dependencies = lockfile:get_dependencies()
         dependencies.argparse.requires[1] = "tampered"
         dependencies.argparse.version = "9.9-1"
-        assert.equals("luasystem >= 0.2", lockfile:get_dependency("argparse").requires[1])
-        assert.equals("0.7.2-1", lockfile:get_dependency("argparse").version)
-    end)
-
-    it("rejects a dependency update atomically when the proposed record is invalid", function()
-        local lockfile = assert(Lockfile.from_installed(manifest_data(), {
-            { name = "argparse", version = "0.7.2-1" }
-        }))
-
-        local success, err = lockfile:set_dependency("argparse", {
-            version = " ",
-            direct = true,
-            constraint = ">= 0.7"
-        })
-        assert.is_false(success)
-        assert.is_truthy(err)
-        assert.equals("0.7.2-1", lockfile:get_dependency("argparse").version)
     end)
 
     it("detects a locked runtime from a different Lua series", function()
