@@ -29,7 +29,7 @@ local lfs = require("lfs")
 
 --- @class Artemis.RuntimeManager
 --- @field root                  string            Absolute project root directory.
---- @field manifest              Artemis.Manifest  Manifest containing the project's Lua version.
+--- @field manifest?             Artemis.Manifest  Manifest containing the project's Lua version.
 --- @field cache_dir             string            Shared Artemis cache directory.
 --- @field downloads_dir         string            Directory containing downloaded Lua source archives.
 --- @field runtimes_dir          string            Directory containing compiled Lua installations.
@@ -39,7 +39,7 @@ local lfs = require("lfs")
 --- @field curl                  string            curl executable.
 --- @field tar                   string            tar executable.
 --- @field make                  string            make executable.
---- @field sha256sum?            string            SHA-256 executable, when available.
+--- @field sha256sum             string            SHA-256 executable, when available.
 --- @field source_url            string            Official Lua source index URL.
 local RuntimeManager = {}
 RuntimeManager.__index = RuntimeManager
@@ -521,7 +521,10 @@ end
 --- @return string?  checksum
 --- @return string?  error_message
 function RuntimeManager:resolve_version(requested_version)
-    requested_version = requested_version or (self.manifest.data and self.manifest.data.lua)
+    requested_version = requested_version or (self.manifest and self.manifest.data and self.manifest.data.lua)
+    if not requested_version then
+        return nil, nil, "No version was requested and there is not a manifest."
+    end
 
     local series, exact_version, parse_error = parse_requested_version(requested_version)
     if not series then
@@ -741,7 +744,7 @@ end
 
 --- Create a runtime manager bound to a project and its manifest.
 --- @param project_root  string                         Project root directory.
---- @param manifest      Artemis.Manifest               Manifest instance.
+--- @param manifest?     Artemis.Manifest               Manifest instance.
 --- @param options?      Artemis.RuntimeManagerOptions  Runtime manager configuration.
 --- @return Artemis.RuntimeManager?  manager
 --- @return string?                  error_message
@@ -750,8 +753,8 @@ function RuntimeManager.new(project_root, manifest, options)
         return nil, "Project root must be a non-empty string."
     end
 
-    if type(manifest) ~= "table" or type(manifest.data) ~= "table"
-        or type(manifest.data.lua) ~= "string" then
+    if manifest and (type(manifest) ~= "table" or type(manifest.data) ~= "table"
+            or type(manifest.data.lua) ~= "string") then
         return nil, "RuntimeManager.new expects a valid Artemis.Manifest with a Lua version."
     end
 
@@ -820,7 +823,10 @@ end
 --- @return string?  error_message
 --- @return string?  installed_version Exact installed version, when successful.
 function RuntimeManager:install(requested_version)
-    requested_version = requested_version or self.manifest.data.lua
+    requested_version = requested_version or (self.manifest and self.manifest.data.lua)
+    if not requested_version then
+        return false, "No version was requested and there is not a manifest."
+    end
 
     local series, exact_version, parse_error = parse_requested_version(requested_version)
     if not series then
@@ -913,7 +919,10 @@ end
 --- @return boolean?  installed
 --- @return string?   error_message
 function RuntimeManager:is_installed(requested_version)
-    requested_version = requested_version or self.manifest.data.lua
+    requested_version = requested_version or (self.manifest and self.manifest.data.lua)
+    if not requested_version then
+        return false, "No version was requested and there is not a manifest."
+    end
 
     local series, exact_version, parse_error = parse_requested_version(requested_version)
     if not series then
@@ -944,7 +953,7 @@ function RuntimeManager:get_install_path(requested_version)
     if requested_version == nil then
         local selected_version = read_file(self.project_runtime_file)
         selected_version = selected_version and selected_version:match("^%s*([%d%.]+)") or nil
-        requested_version = selected_version or self.manifest.data.lua
+        requested_version = selected_version or (self.manifest and self.manifest.data.lua)
     end
 
     local series, exact_version, parse_error = parse_requested_version(requested_version)

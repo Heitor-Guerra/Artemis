@@ -370,7 +370,7 @@ local function initialize_project(arguments, services)
         return fail(services, script_error)
     end
 
-    write_line(services.stdout, string.format("Initialized empty project '%s' in %s", name, absolute_directory),
+    write_line(services.stdout, string.format("Initialized empty project '%s'", name),
         io.stdout)
     return 0
 end
