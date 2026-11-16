@@ -6,10 +6,10 @@
 ---
 --- @module 'artemis.project'
 
-local Manifest = require("artemis.manifest")
+local Manifest = require("artemis.project.manifest")
 local RuntimeManager = require("artemis.runtime_manager")
 local DependencyManager = require("artemis.dependency_manager")
-local Lockfile = require("artemis.lockfile")
+local Lockfile = require("artemis.project.lockfile")
 local Path = require("artemis.utils.path")
 local FileSystem = require("artemis.utils.filesystem")
 local Process = require("artemis.utils.process")

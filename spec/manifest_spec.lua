@@ -1,5 +1,5 @@
 --- @diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
-local Manifest = require("artemis.manifest")
+local Manifest = require("artemis.project.manifest")
 local helpers = require("spec.helpers")
 
 describe("artemis.manifest", function()

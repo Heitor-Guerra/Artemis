@@ -83,7 +83,7 @@ function helpers.command_succeeded(first, second, third)
 end
 
 function helpers.new_manifest(data)
-    local Manifest = require("artemis.manifest")
+    local Manifest = require("artemis.project.manifest")
     local manifest, err = Manifest.new(data)
     assert(manifest, err)
     return manifest

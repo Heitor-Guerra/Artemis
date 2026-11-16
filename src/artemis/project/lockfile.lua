@@ -8,7 +8,7 @@
 --- The file is TOML and is intentionally deterministic: project fields,
 --- package records, and package metadata are written in a stable order.
 ---
---- @module 'artemis.lockfile'
+--- @module 'artemis.project.lockfile'
 
 local toml = require("tinytoml")
 local TableUtils = require("artemis.utils.table_utils")

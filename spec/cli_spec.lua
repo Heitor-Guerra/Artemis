@@ -2,7 +2,7 @@
 local CLI = require("artemis.cli")
 local FileSystem = require("artemis.utils.filesystem")
 local RuntimeManager = require("artemis.runtime_manager")
-local Manifest = require("artemis.manifest")
+local Manifest = require("artemis.project.manifest")
 local helpers = require("spec.helpers")
 local lfs = require("lfs")
 

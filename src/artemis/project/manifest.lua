@@ -4,7 +4,7 @@
 --- install runtimes, resolve dependencies, or execute project files.
 ---
 --- TOML parsing and encoding are delegated to `tinytoml`.
---- @module 'artemis.manifest'
+--- @module 'artemis.project.manifest'
 
 local toml = require("tinytoml")
 local TableUtils = require("artemis.utils.table_utils")

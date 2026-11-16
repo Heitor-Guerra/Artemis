@@ -1,6 +1,6 @@
 --- @diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
 local Project = require("artemis.project")
-local Lockfile = require("artemis.lockfile")
+local Lockfile = require("artemis.project.lockfile")
 local helpers = require("spec.helpers")
 
 describe("Artemis end-to-end project workflows", function()

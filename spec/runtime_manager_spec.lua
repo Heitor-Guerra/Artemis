@@ -15,14 +15,10 @@ local function make_manager(root, overrides)
     return manager
 end
 
-local function make_directory(path)
-    helpers.make_directory(path)
-end
-
 local function make_runtime(manager, version)
     local executable = manager.runtimes_dir .. "/" .. version .. "/bin/lua"
     local directory = executable:match("^(.*)/lua$")
-    make_directory(directory)
+    helpers.make_directory(directory)
     helpers.write_file(executable, "#!/bin/sh\necho Lua " .. version .. "\n")
     helpers.make_executable(executable)
     return executable
@@ -46,7 +42,7 @@ local function with_environment(overrides, callback)
     return table.unpack(results)
 end
 
-describe("artemis.runtime_manager global API", function()
+describe("artemis.runtime_manager construction", function()
     it("constructs without a project root or manifest", function()
         helpers.with_temp_dir(function(root)
             local manager, err = RuntimeManager.new({ cache_dir = root .. "/cache" })
@@ -55,10 +51,10 @@ describe("artemis.runtime_manager global API", function()
             assert.equals(root .. "/cache/downloads/lua", manager.downloads_dir)
             assert.equals(root .. "/cache/runtimes/lua", manager.runtimes_dir)
             assert.equals(root .. "/cache/build", manager.build_dir)
+            assert.is_truthy(manager.installer)
+            assert.is_truthy(manager.release_catalog)
             assert.is_nil(manager.project_root)
             assert.is_nil(manager.manifest)
-            assert.is_nil(manager.project_runtime_file)
-            assert.is_nil(manager.metadata_dir)
         end)
     end)
 
@@ -75,8 +71,10 @@ describe("artemis.runtime_manager global API", function()
         assert.is_nil(manager)
         assert.matches("Could not detect home directory", err)
 
-        manager, err = RuntimeManager.new({ cache_dir = "/tmp/artemis-invalid-source-url-cache", source_url =
-        "http://example.com/" })
+        manager, err = RuntimeManager.new({
+            cache_dir = "/tmp/artemis-invalid-source-url-cache",
+            source_url = "http://example.com/"
+        })
         assert.is_nil(manager)
         assert.matches("must be an HTTPS URL", err)
 
@@ -130,43 +128,17 @@ describe("artemis.runtime_manager global API", function()
         end)
     end)
 
-    it("expands an explicit home-relative cache directory", function()
+    it("supports home-relative cache paths and rejects named-user paths", function()
         helpers.with_temp_dir(function(root)
             with_environment({ HOME = root .. "/home" }, function()
                 local manager, err = RuntimeManager.new({ cache_dir = "~/.cache/artemis-tests" })
                 assert.is_truthy(manager, err)
                 assert.equals(root .. "/home/.cache/artemis-tests", manager.cache_dir)
-            end)
-        end)
-    end)
 
-    it("rejects named-user home paths and missing home configuration", function()
-        helpers.with_temp_dir(function(root)
-            local manager, err = RuntimeManager.new({ cache_dir = "~someone/.cache/artemis" })
-            assert.is_nil(manager)
-            assert.matches("Named%-user home paths are not supported", err)
-
-            with_environment({
-                ARTEMIS_CACHE_DIR = "",
-                XDG_CACHE_HOME = "relative-xdg",
-                HOME = "relative-home"
-            }, function()
-                manager, err = RuntimeManager.new({})
+                manager, err = RuntimeManager.new({ cache_dir = "~someone/.cache/artemis" })
                 assert.is_nil(manager)
-                assert.matches("Could not detect home directory", err)
+                assert.matches("Named%-user home paths are not supported", err)
             end)
-        end)
-    end)
-
-    it("does not require any project metadata directories", function()
-        helpers.with_temp_dir(function(root)
-            local manager = make_manager(root)
-            assert.is_nil(manager.project_runtime_file)
-            assert.is_nil(manager.metadata_dir)
-
-            local installed = manager:list_installed()
-            assert.same({}, installed)
-            assert.is_nil(io.open(root .. "/.artemis/runtime-version", "rb"))
         end)
     end)
 end)
@@ -175,7 +147,6 @@ describe("artemis.runtime_manager version resolution", function()
     it("rejects LuaJIT and malformed versions without network access", function()
         helpers.with_temp_dir(function(root)
             local manager = make_manager(root)
-
             local version, checksum, err = manager:resolve_version("luajit")
             assert.is_nil(version)
             assert.is_nil(checksum)
@@ -202,120 +173,51 @@ describe("artemis.runtime_manager version resolution", function()
         end)
     end)
 
-    it("resolves exact releases using the official checksum lookup", function()
+    it("resolves exact releases using the bundled official checksum catalog", function()
         helpers.with_temp_dir(function(root)
             local manager = make_manager(root)
-            local expected_checksum = string.rep("a", 64)
-            manager._get_release_checksum = function(_, version)
-                assert.equals("5.4.9", version)
-                return expected_checksum
-            end
-
             local version, checksum, err = manager:resolve_version("5.4.9")
             assert.is_nil(err)
             assert.equals("5.4.9", version)
-            assert.equals(expected_checksum, checksum)
+            assert.equals("2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6", checksum)
         end)
     end)
 
-    it("selects the newest patch release from the requested series", function()
+    it("resolves a major.minor series to its catalog base release", function()
         helpers.with_temp_dir(function(root)
             local manager = make_manager(root)
-            local checksum_old = string.rep("a", 64)
-            local checksum_new = string.rep("b", 64)
-            manager._fetch_release_index = function()
-                return table.concat({
-                    "<table>",
-                    "<tr><td>lua-5.4.8.tar.gz</td><td>" .. checksum_old .. "</td></tr>",
-                    "<tr><td>lua-5.4.10.tar.gz</td><td>" .. checksum_new .. "</td></tr>",
-                    "<tr><td>lua-5.3.7.tar.gz</td><td>" .. checksum_old .. "</td></tr>",
-                    "</table>"
-                }, "\n")
-            end
+            local version, checksum, err = manager:resolve_version("5.4")
+            assert.is_nil(err)
+            assert.equals("5.4.0", version)
+            assert.equals("eac0836eb7219e421a96b7ee3692b93f0629e4cdb0c788432e3d10ce9ed47e28", checksum)
+        end)
+    end)
+
+    it("uses an already installed series release before consulting the catalog", function()
+        helpers.with_temp_dir(function(root)
+            local manager = make_manager(root)
+            make_runtime(manager, "5.4.9")
+            make_runtime(manager, "5.4.10")
 
             local version, checksum, err = manager:resolve_version("5.4")
             assert.is_nil(err)
             assert.equals("5.4.10", version)
-            assert.equals(checksum_new, checksum)
-        end)
-    end)
-
-    it("parses release entries when the index uses non-table markup", function()
-        helpers.with_temp_dir(function(root)
-            local manager = make_manager(root)
-            local old_checksum = string.rep("a", 64)
-            local latest_checksum = string.rep("b", 64)
-            manager._fetch_release_index = function()
-                return table.concat({
-                    "<html><body>",
-                    "<div><a href=\"lua-5.4.8.tar.gz\">lua-5.4.8.tar.gz</a>",
-                    "<span>SHA-256: " .. old_checksum .. "</span></div>",
-                    "<div><a href=\"lua-5.4.9.tar.gz\">lua-5.4.9.tar.gz</a>",
-                    "<span>SHA-256: " .. latest_checksum .. "</span></div>",
-                    "</body></html>"
-                }, "\n")
-            end
-
-            local version, checksum, err = manager:resolve_version("5.4")
-            assert.is_nil(err)
-            assert.equals("5.4.9", version)
-            assert.equals(latest_checksum, checksum)
-        end)
-    end)
-
-    it("uses an installed series mapping without fetching the release index", function()
-        helpers.with_temp_dir(function(root)
-            local manager = make_manager(root)
-            make_runtime(manager, "5.4.9")
-            make_directory(manager.cache_dir .. "/metadata")
-            helpers.write_file(manager.cache_dir .. "/metadata/lua-series-5.4.txt", "5.4.9\n")
-            manager._fetch_release_index = function()
-                error("A mapped installed series must not fetch the release index")
-            end
-
-            local version, checksum, err = manager:resolve_version("5.4")
-            assert.is_nil(err)
-            assert.equals("5.4.9", version)
             assert.is_nil(checksum)
         end)
     end)
 
-    it("uses a cached checksum without a network request", function()
+    it("prefers a valid cached series mapping over another installed patch", function()
         helpers.with_temp_dir(function(root)
             local manager = make_manager(root)
-            local expected = string.rep("A", 64)
-            make_directory(manager.downloads_dir)
-            helpers.write_file(manager.downloads_dir .. "/lua-5.4.9.sha256", expected .. "  lua-5.4.9.tar.gz\n")
-            manager._fetch_release_index = function()
-                error("Cached checksum should avoid a network request")
-            end
+            make_runtime(manager, "5.4.8")
+            make_runtime(manager, "5.4.10")
+            helpers.make_directory(manager.cache_dir .. "/metadata")
+            helpers.write_file(manager.cache_dir .. "/metadata/lua-series-5.4.txt", "5.4.8\n")
 
-            local checksum, err = manager:_get_release_checksum("5.4.9")
+            local version, checksum, err = manager:resolve_version("5.4")
             assert.is_nil(err)
-            assert.equals(expected:lower(), checksum)
-        end)
-    end)
-
-    it("reuses a verified cached archive without invoking the downloader", function()
-        helpers.with_temp_dir(function(root)
-            local manager = make_manager(root)
-            local expected = string.rep("a", 64)
-            make_directory(manager.downloads_dir)
-            local archive = manager.downloads_dir .. "/lua-5.4.9.tar.gz"
-            helpers.write_file(archive, "cached archive")
-            manager._sha256 = function(_, path)
-                assert.equals(archive, path)
-                return expected
-            end
-            manager.downloader = {
-                download = function()
-                    error("A verified cached archive should not be downloaded")
-                end
-            }
-
-            local result, err = manager:_ensure_archive("5.4.9", expected)
-            assert.is_nil(err)
-            assert.equals(archive, result)
+            assert.equals("5.4.8", version)
+            assert.is_nil(checksum)
         end)
     end)
 end)
@@ -358,20 +260,21 @@ describe("artemis.runtime_manager shared cache behavior", function()
         end)
     end)
 
-    it("lists only complete exact patch releases in sorted order", function()
+    it("lists only complete exact patch releases in numeric version order", function()
         helpers.with_temp_dir(function(root)
             local manager = make_manager(root)
             make_runtime(manager, "5.4.9")
             make_runtime(manager, "5.3.6")
-            local incomplete = manager.runtimes_dir .. "/5.4.10/bin"
+            make_runtime(manager, "5.4.10")
+            local incomplete = manager.runtimes_dir .. "/5.4.11/bin"
             local malformed = manager.runtimes_dir .. "/5.4-dev/bin/lua"
             helpers.make_directory(incomplete)
             helpers.make_directory(malformed:match("^(.*)/lua$"))
             helpers.write_file(malformed, "#!/bin/sh\nexit 0\n")
             helpers.make_executable(malformed)
 
-            assert.same({ "5.3.6", "5.4.9" }, manager:list_installed())
-            assert.same({ "5.3.6", "5.4.9" }, manager:list())
+            assert.same({ "5.3.6", "5.4.9", "5.4.10" }, manager:list_installed())
+            assert.same({ "5.3.6", "5.4.9", "5.4.10" }, manager:list())
         end)
     end)
 
@@ -392,7 +295,7 @@ describe("artemis.runtime_manager shared cache behavior", function()
             local manager = make_manager(root)
             make_runtime(manager, "5.4.8")
             make_runtime(manager, "5.4.10")
-            make_directory(manager.cache_dir .. "/metadata")
+            helpers.make_directory(manager.cache_dir .. "/metadata")
             helpers.write_file(manager.cache_dir .. "/metadata/lua-series-5.4.txt", "5.4.8\n")
 
             assert.equals(manager.runtimes_dir .. "/5.4.8", manager:get_install_path("5.4"))
@@ -403,8 +306,8 @@ describe("artemis.runtime_manager shared cache behavior", function()
         helpers.with_temp_dir(function(root)
             local manager = make_manager(root)
             make_runtime(manager, "5.4.9")
-            make_directory(manager.cache_dir .. "/metadata")
             local mapping = manager.cache_dir .. "/metadata/lua-series-5.4.txt"
+            helpers.make_directory(manager.cache_dir .. "/metadata")
             helpers.write_file(mapping, "5.4.9\n")
 
             local removed, err = manager:uninstall("5.4.9")
@@ -418,8 +321,8 @@ describe("artemis.runtime_manager shared cache behavior", function()
             local manager = make_manager(root)
             make_runtime(manager, "5.4.8")
             make_runtime(manager, "5.4.9")
-            make_directory(manager.cache_dir .. "/metadata")
             local mapping = manager.cache_dir .. "/metadata/lua-series-5.4.txt"
+            helpers.make_directory(manager.cache_dir .. "/metadata")
             helpers.write_file(mapping, "5.4.8\n")
 
             local removed, err = manager:uninstall("5.4.9")
@@ -445,13 +348,14 @@ describe("artemis.runtime_manager shared cache behavior", function()
         helpers.with_temp_dir(function(root)
             local manager = make_manager(root)
             local executable = make_runtime(manager, "5.4.9")
-            make_directory(manager.cache_dir .. "/metadata")
-            helpers.write_file(manager.cache_dir .. "/metadata/lua-series-5.4.txt", "5.4.9\n")
+            local mapping = manager.cache_dir .. "/metadata/lua-series-5.4.txt"
+            helpers.make_directory(manager.cache_dir .. "/metadata")
+            helpers.write_file(mapping, "5.4.9\n")
 
             local removed, err = manager:uninstall("5.4")
             assert.is_true(removed, err)
             assert.is_nil(io.open(executable, "rb"))
-            assert.is_nil(io.open(manager.cache_dir .. "/metadata/lua-series-5.4.txt", "rb"))
+            assert.is_nil(io.open(mapping, "rb"))
         end)
     end)
 
@@ -487,7 +391,7 @@ describe("artemis.runtime_manager shared cache behavior", function()
     end)
 end)
 
-describe("artemis.runtime_manager installation", function()
+describe("artemis.runtime_manager installation coordination", function()
     it("reuses an already installed exact runtime without resolving or building", function()
         helpers.with_temp_dir(function(root)
             local manager = make_manager(root)
@@ -496,56 +400,42 @@ describe("artemis.runtime_manager installation", function()
             manager.resolve_version = function()
                 error("resolve_version must not be called for an installed exact runtime")
             end
+            manager.installer.install = function()
+                error("installer must not be called for an installed exact runtime")
+            end
 
             local success, err, version = manager:install("5.4.9")
             assert.is_true(success, err)
             assert.equals("5.4.9", version)
             assert.equals(manager.runtimes_dir .. "/5.4.9", manager:get_install_path("5.4.9"))
             assert.equals(executable, manager:get_executable("5.4.9"))
-            assert.is_nil(io.open(root .. "/.artemis/runtime-version", "rb"))
         end)
     end)
 
-    it("installs a resolved series release and records its shared series mapping", function()
+    it("delegates the exact resolved release to the installer and records a series mapping", function()
         helpers.with_temp_dir(function(root)
             local manager = make_manager(root)
-            local archive = root .. "/lua-5.4.9.tar.gz"
-            helpers.write_file(archive, "fixture archive")
-            local expected_checksum = string.rep("a", 64)
+            local expected_checksum = "eac0836eb7219e421a96b7ee3692b93f0629e4cdb0c788432e3d10ce9ed47e28"
 
-            manager.resolve_version = function(_, requested)
-                assert.equals("5.4", requested)
-                return "5.4.9", expected_checksum
-            end
-            manager._ensure_archive = function(_, version, checksum)
-                assert.equals("5.4.9", version)
+            manager.installer.install = function(_, version, checksum)
+                assert.equals("5.4.0", version)
                 assert.equals(expected_checksum, checksum)
-                return archive
-            end
-            manager._build_and_install = function(self, version)
-                assert.equals("5.4.9", version)
-                make_runtime(self, version)
+                make_runtime(manager, version)
                 return true
             end
 
             local success, err, version = manager:install("5.4")
             assert.is_true(success, err)
-            assert.equals("5.4.9", version)
-            assert.equals("5.4.9\n", helpers.read_file(manager.cache_dir .. "/metadata/lua-series-5.4.txt"))
+            assert.equals("5.4.0", version)
+            assert.equals("5.4.0\n", helpers.read_file(manager.cache_dir .. "/metadata/lua-series-5.4.txt"))
             assert.is_true(manager:is_installed("5.4"))
         end)
     end)
 
-    it("does not write a series mapping when the build fails", function()
+    it("does not write a series mapping when installation fails", function()
         helpers.with_temp_dir(function(root)
             local manager = make_manager(root)
-            manager.resolve_version = function()
-                return "5.4.9", string.rep("a", 64)
-            end
-            manager._ensure_archive = function()
-                return root .. "/lua-5.4.9.tar.gz"
-            end
-            manager._build_and_install = function()
+            manager.installer.install = function()
                 return false, "simulated compiler failure"
             end
 
@@ -553,101 +443,6 @@ describe("artemis.runtime_manager installation", function()
             assert.is_false(success)
             assert.matches("simulated compiler failure", err)
             assert.is_nil(io.open(manager.cache_dir .. "/metadata/lua-series-5.4.txt", "rb"))
-        end)
-    end)
-
-    it("rejects a downloaded archive whose checksum does not match", function()
-        helpers.with_temp_dir(function(root)
-            local manager = make_manager(root)
-            make_directory(manager.downloads_dir)
-            manager.downloader = {
-                download = function(_, destination)
-                    helpers.write_file(destination, "not-a-real-lua-archive")
-                    return true
-                end
-            }
-            manager._sha256 = function()
-                return string.rep("b", 64)
-            end
-
-            local archive, err = manager:_ensure_archive("5.4.9", string.rep("a", 64))
-            assert.is_nil(archive)
-            assert.matches("SHA%-256 mismatch", err)
-            assert.is_nil(io.open(manager.downloads_dir .. "/lua-5.4.9.tar.gz.part", "rb"))
-            assert.is_nil(io.open(manager.downloads_dir .. "/lua-5.4.9.tar.gz", "rb"))
-        end)
-    end)
-end)
-
-describe("artemis.runtime_manager build pipeline", function()
-    it("extracts, builds, tests, stages, verifies, and promotes a Lua runtime", function()
-        helpers.with_temp_dir(function(root)
-            local manager = make_manager(root)
-            local fake_tar = root .. "/fake-tar"
-            local fake_make = root .. "/fake-make"
-
-            helpers.write_file(fake_tar, table.concat({
-                "#!/bin/sh",
-                "[ \"$1\" = -xzf ] || exit 31",
-                "archive=\"$2\"",
-                "shift 2",
-                "[ \"$1\" = -C ] || exit 32",
-                "destination=\"$2\"",
-                "version=\"${archive##*/lua-}\"",
-                "version=\"${version%.tar.gz}\"",
-                "mkdir -p \"$destination/lua-$version\"",
-                ""
-            }, "\n"))
-            helpers.make_executable(fake_tar)
-
-            helpers.write_file(fake_make, table.concat({
-                "#!/bin/sh",
-                "case \"$1\" in",
-                "  all|test) exit 0 ;;",
-                "  install)",
-                "    top=\"${2#INSTALL_TOP=}\"",
-                "    mkdir -p \"$top/bin\"",
-                "    printf '%s\\n' '#!/bin/sh' 'echo Lua 5.4.9' 'exit 0' > \"$top/bin/lua\"",
-                "    chmod +x \"$top/bin/lua\"",
-                "    exit 0",
-                "    ;;",
-                "  *) exit 33 ;;",
-                "esac",
-                ""
-            }, "\n"))
-            helpers.make_executable(fake_make)
-
-            manager.tar = fake_tar
-            manager.make = fake_make
-            local archive = root .. "/lua-5.4.9.tar.gz"
-            helpers.write_file(archive, "fake archive input")
-
-            local success, err = manager:_build_and_install("5.4.9", archive)
-            assert.is_true(success, err)
-            assert.is_true(manager:is_installed("5.4.9"))
-            assert.equals(manager.runtimes_dir .. "/5.4.9", manager:get_install_path("5.4.9"))
-            assert.equals(manager.runtimes_dir .. "/5.4.9/bin/lua", manager:get_executable("5.4.9"))
-            assert.is_nil(io.open(manager.build_dir .. "/lua-5.4.9/staging/bin/lua", "rb"))
-        end)
-    end)
-
-    it("does not replace an existing cached runtime when the rebuild fails", function()
-        helpers.with_temp_dir(function(root)
-            local manager = make_manager(root)
-            local existing = make_runtime(manager, "5.4.9")
-
-            local failing_tar = root .. "/failing-tar"
-            helpers.write_file(failing_tar, "#!/bin/sh\nexit 1\n")
-            helpers.make_executable(failing_tar)
-            manager.tar = failing_tar
-
-            local archive = root .. "/lua-5.4.9.tar.gz"
-            helpers.write_file(archive, "fake archive")
-            local success, err = manager:_build_and_install("5.4.9", archive)
-
-            assert.is_false(success)
-            assert.matches("Could not extract Lua 5%.4%.9", err)
-            assert.equals("#!/bin/sh\necho Lua 5.4.9\n", helpers.read_file(existing))
         end)
     end)
 end)

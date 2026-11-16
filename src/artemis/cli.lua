@@ -6,8 +6,8 @@
 --- @module 'artemis.cli'
 
 local argparse = require("argparse")
-local Manifest = require("artemis.manifest")
-local Lockfile = require("artemis.lockfile")
+local Manifest = require("artemis.project.manifest")
+local Lockfile = require("artemis.project.lockfile")
 local Project = require("artemis.project")
 local RuntimeManager = require("artemis.runtime_manager")
 local Path = require("artemis.utils.path")
