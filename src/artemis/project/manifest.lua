@@ -18,6 +18,10 @@ local FileSystem = require("artemis.utils.filesystem")
 --- @field main?         string                 Optional path to the project's entry-point file.
 --- @field authors?      string[]               Project authors.
 --- @field maintainers?  string[]               Project maintainers.
+--- @field license?      string                 SPDX license identifier for generated rockspecs.
+--- @field source_url?   string                 Public source URL used in generated rockspecs.
+--- @field source_tag?   string                 Git tag used by the generated rockspec.
+--- @field modules?      table<string, string>  Explicit Lua module names mapped to project-relative source files.
 --- @field dependencies  table<string, string>  Runtime dependencies mapped to version constraints.
 
 --- @class Artemis.Manifest
@@ -33,6 +37,15 @@ Manifest.DEFAULT_FILENAME = "artemis-project.toml"
 
 ------------------------------------ Local Functions ------------------------------------
 
+local function is_valid_module_name(name)
+    if type(name) ~= "string" or name == "" or name:sub(1, 1) == "." or name:sub(-1) == "." then
+        return false
+    end
+    for segment in name:gmatch("[^.]+") do
+        if not segment:match("^[%a_][%w_%-]*$") then return false end
+    end
+    return not name:match("%.%.")
+end
 
 --- Validate the dependency table.
 --- @param value  any
@@ -103,6 +116,39 @@ local function validate_data(data)
         local maintainer_errors = TableUtils.validate_string_array(data.maintainers, "maintainers")
         for _, message in ipairs(maintainer_errors) do
             errors[#errors + 1] = message
+        end
+    end
+
+    for _, field_name in ipairs({ "license", "source_url", "source_tag" }) do
+        local value = data[field_name]
+        if value ~= nil and not TableUtils.is_non_empty_string(value) then
+            errors[#errors + 1] = string.format("'%s' must be a non-empty string when provided.", field_name)
+        elseif type(value) == "string" and value:find("[\r\n]") then
+            errors[#errors + 1] = string.format("'%s' cannot contain line breaks.", field_name)
+        end
+    end
+
+    if data.modules ~= nil then
+        if type(data.modules) ~= "table" then
+            errors[#errors + 1] = "'modules' must be a table mapping Lua module names to relative source paths."
+        else
+            for module_name, source_path in pairs(data.modules) do
+                if not is_valid_module_name(module_name) then
+                    errors[#errors + 1] = string.format("Invalid Lua module name '%s' in 'modules'.", tostring(module_name))
+                end
+                if not TableUtils.is_non_empty_string(source_path) or source_path:find("[\r\n]")
+                    or source_path:sub(1, 1) == "/" or source_path:match("^%a:[/\\]") then
+                    errors[#errors + 1] = string.format("Source path for module '%s' must be a non-empty relative path.", tostring(module_name))
+                else
+                    local normalized_path = source_path:gsub("\\", "/")
+                    for segment in normalized_path:gmatch("[^/]+") do
+                        if segment == ".." or segment == "." then
+                            errors[#errors + 1] = string.format("Source path for module '%s' cannot contain traversal segments.", tostring(module_name))
+                            break
+                        end
+                    end
+                end
+            end
         end
     end
 

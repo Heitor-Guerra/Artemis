@@ -358,6 +358,20 @@ function DependencyManager:install(dependencies, exact_versions)
     return true
 end
 
+--- Build and install the current project from a generated or existing rockspec.
+--- This is the LuaRocks compatibility implementation of `artemis build`.
+--- @param rockspec_path string
+--- @return boolean success
+--- @return string? error_message
+function DependencyManager:build(rockspec_path)
+    if type(rockspec_path) ~= "string" or not rockspec_path:match("%S") then
+        return false, "A rockspec path is required to build the project."
+    end
+    local output, build_error = capture_luarocks(self, { "make", rockspec_path })
+    if not output then return false, build_error end
+    return true
+end
+
 --- Verify that each supplied exact package version is installed.
 --- This detects LuaRocks releases that do not honor the native lockfile adapter.
 --- @param exact_versions  table<string, string>
