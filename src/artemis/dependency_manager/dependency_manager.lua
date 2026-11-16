@@ -12,7 +12,8 @@
 local Path = require("artemis.utils.path")
 local FileSystem = require("artemis.utils.filesystem")
 local Process = require("artemis.utils.process")
-local TableUtils = require("artemis.utils.table_utils")
+local LuaRocksConfig = require("artemis.dependency_manager.luarocks_config")
+local RockspecGeneration = require("artemis.dependency_manager.rockspec_generation")
 
 --- @class Artemis.DependencyManagerOptions
 --- @field tree?             string  LuaRocks tree. Defaults to "lua_modules".
@@ -46,208 +47,6 @@ DependencyManager.__index = DependencyManager
 
 ------------------------------------ Local Functions ------------------------------------
 
---- @type string
-local ROCKSPEC_PACKAGE = "artemis-dependencies"
-
---- @type string
-local ROCKSPEC_VERSION = "0.0.0-1"
-
---- @type string
-local ROCKSPEC_FILENAME = ROCKSPEC_PACKAGE .. "-" .. ROCKSPEC_VERSION .. ".rockspec"
-
---- Resolve the shared Artemis cache directory to an absolute path.
---- @param working_directory string  Absolute working directory.
---- @param requested?  string  Explicit cache directory.
---- @return string?  cache_dir
---- @return string?  error_message
-local function resolve_cache_dir(working_directory, requested)
-    local candidate = requested or os.getenv("ARTEMIS_CACHE_DIR")
-
-    if candidate == nil or candidate == "" then
-        local xdg_cache_home = os.getenv("XDG_CACHE_HOME")
-        local home = os.getenv("HOME")
-
-        if xdg_cache_home and xdg_cache_home:match("^/") then
-            candidate = Path.join(xdg_cache_home, "artemis")
-        elseif home and home:match("^/") then
-            candidate = Path.join(Path.join(home, ".cache"), "artemis")
-        else
-            candidate = Path.join(working_directory, ".cache/artemis")
-        end
-    end
-
-    -- Expand an explicitly supplied home-relative path before resolving other
-    -- relative paths against the working directory. Only the current user's home
-    -- directory is supported; named-user expansion is shell-specific.
-    if candidate == "~" or candidate:sub(1, 2) == "~/" then
-        local home = os.getenv("HOME")
-        if not home or not home:match("^/") then
-            return nil, "Cannot expand the cache path because HOME is not an absolute path."
-        end
-
-        candidate = candidate == "~" and home or Path.join(home, candidate:sub(3))
-    elseif candidate:sub(1, 1) == "~" then
-        return nil, "Named-user home paths are not supported for the Artemis cache directory."
-    elseif not Path.is_absolute(candidate) then
-        candidate = Path.join(working_directory, candidate)
-    end
-
-    candidate = candidate:gsub("/+$", "")
-    if candidate == "" then
-        candidate = "/artemis"
-    end
-
-    local parent = candidate:match("^(.*)/[^/]+$")
-    if not parent or parent == "" then
-        parent = "/"
-    end
-    local parent_created, parent_create_error = FileSystem.make_directory(parent)
-    if not parent_created then
-        return nil, string.format("Could not create Artemis cache parent directory: %s", parent_create_error)
-    end
-
-    local absolute_parent, parent_error = Path.absolute_directory(parent)
-    if not absolute_parent then
-        return nil, string.format("Could not resolve Artemis cache directory: %s", parent_error)
-    end
-
-    local basename = candidate:match("([^/]+)$") or "artemis"
-    return Path.join(absolute_parent, basename)
-end
-
---- Find an existing LuaRocks configuration that should be preserved.
---- @param working_directory string  Working directory.
---- @param lua_version       string  LuaRocks version identifier, such as "5.4".
---- @param explicit_config?  string  Explicit config path.
---- @return string[]  paths
-local function find_luarocks_configs(working_directory, lua_version, explicit_config)
-    local candidates = {}
-    local specific_env = os.getenv("LUAROCKS_CONFIG_" .. lua_version:gsub("%.", "_"))
-    local generic_env = os.getenv("LUAROCKS_CONFIG")
-
-    if explicit_config then
-        candidates[#candidates + 1] = explicit_config
-    elseif specific_env then
-        candidates[#candidates + 1] = specific_env
-    elseif generic_env then
-        candidates[#candidates + 1] = generic_env
-    else
-        local home = os.getenv("HOME") or ""
-        local xdg = os.getenv("XDG_CONFIG_HOME") or Path.join(home, ".config")
-        candidates[#candidates + 1] = Path.join(Path.join(xdg, "luarocks"), "config-" .. lua_version .. ".lua")
-        candidates[#candidates + 1] = Path.join(Path.join(home, ".luarocks"), "config-" .. lua_version .. ".lua")
-        candidates[#candidates + 1] = Path.join(Path.join(xdg, "luarocks"), "config.lua")
-        candidates[#candidates + 1] = Path.join(Path.join(home, ".luarocks"), "config.lua")
-    end
-
-    -- `luarocks init` may provide working-directory-specific settings in this file.
-    candidates[#candidates + 1] = Path.join(Path.join(working_directory, ".luarocks"), "config-" .. lua_version .. ".lua")
-
-    local paths = {}
-    local seen = {}
-    for _, path in ipairs(candidates) do
-        if path and path ~= "" and not seen[path] then
-            if FileSystem.file_exists(path) then
-                paths[#paths + 1] = path
-                seen[path] = true
-            end
-        end
-    end
-
-    return paths
-end
-
---- Create a LuaRocks config that redirects source downloads to the Artemis cache.
---- @param working_directory string  Working directory.
---- @param cache_dir         string  Shared Artemis cache directory.
---- @param lua_version       string  LuaRocks version identifier.
---- @param explicit_config?  string  Existing LuaRocks config to preserve.
---- @param lua_dir?          string  Exact Lua installation prefix.
---- @return string?  config_path
---- @return string?  rocks_cache_dir
---- @return string?  error_message
-local function create_luarocks_cache_config(working_directory, cache_dir, lua_version, explicit_config, lua_dir)
-    local rocks_cache_dir = Path.join(cache_dir, "rocks/downloads")
-    local config_directory = Path.join(cache_dir, "luarocks")
-    local config_path = Path.join(config_directory, "config-" .. lua_version .. ".lua")
-
-    local parent_created, parent_create_error = FileSystem.make_directory(rocks_cache_dir)
-    if parent_created then
-        parent_created, parent_create_error = FileSystem.make_directory(config_directory)
-    end
-    if not parent_created then
-        return nil,
-            string.format("Could not create LuaRocks cache directory '%s': %s.", rocks_cache_dir, parent_create_error)
-    end
-
-    local lines = {
-        "-- Generated by Artemis. Do not edit; change the Artemis cache settings instead."
-    }
-
-    for _, existing_config in ipairs(find_luarocks_configs(working_directory, lua_version, explicit_config)) do
-        if existing_config ~= config_path then
-            lines[#lines + 1] = "dofile(" .. string.format("%q", existing_config) .. ")"
-        end
-    end
-
-    lines[#lines + 1] = "local_cache = " .. string.format("%q", rocks_cache_dir)
-    lines[#lines + 1] = "aggressive_cache = true"
-
-    -- Configure LuaRocks to compile native rocks against the exact Lua runtime
-    -- selected by Artemis, rather than whichever interpreter happens to be on PATH.
-    if lua_dir then
-        local lua_bindir = Path.join(lua_dir, "bin")
-        local lua_executable = Path.join(lua_bindir, "lua")
-        local lua_include = Path.join(lua_dir, "include")
-        local lua_library = Path.join(lua_dir, "lib")
-
-        lines[#lines + 1] = "variables = variables or {}"
-        lines[#lines + 1] = "variables.LUA = " .. string.format("%q", lua_executable)
-        lines[#lines + 1] = "variables.LUA_DIR = " .. string.format("%q", lua_dir)
-        lines[#lines + 1] = "variables.LUA_BINDIR = " .. string.format("%q", lua_bindir)
-        lines[#lines + 1] = "variables.LUA_INCDIR = " .. string.format("%q", lua_include)
-        lines[#lines + 1] = "variables.LUA_LIBDIR = " .. string.format("%q", lua_library)
-    end
-
-    lines[#lines + 1] = ""
-
-    local saved, save_error = FileSystem.write_file(config_path, table.concat(lines, "\n"))
-    if not saved then
-        return nil, nil, string.format("Could not write LuaRocks cache config '%s': %s", config_path, save_error)
-    end
-
-    return config_path, rocks_cache_dir
-end
-
---- Execute a command in the configured working directory.
---- @param self       Artemis.DependencyManager
---- @param arguments  string[]                   Arguments following the LuaRocks executable.
---- @return boolean  success
---- @return string?  error_message
-local function execute_luarocks(self, arguments)
-    local command_parts = {
-        "cd " .. Process.shell_quote(self.working_directory) .. " &&",
-        "LUAROCKS_CONFIG=" .. Process.shell_quote(self.luarocks_config),
-        "LUAROCKS_CONFIG_" .. self.lua_version:gsub("%.", "_") .. "=" .. Process.shell_quote(self.luarocks_config),
-        Process.shell_quote(self.luarocks),
-        "--tree=" .. Process.shell_quote(self.tree),
-        "--lua-version=" .. Process.shell_quote(self.lua_version)
-    }
-
-    for _, argument in ipairs(arguments) do
-        command_parts[#command_parts + 1] = Process.shell_quote(argument)
-    end
-
-    local command = table.concat(command_parts, " ")
-
-    local success, run_error = Process.execute(command)
-    if not success then
-        return false, string.format("Could not start LuaRocks: %s", run_error)
-    end
-
-    return true
-end
-
 --- Execute a LuaRocks command and capture its combined output.
 --- @param self       Artemis.DependencyManager
 --- @param arguments  string[]                   Arguments following the LuaRocks executable.
@@ -276,94 +75,6 @@ local function capture_luarocks(self, arguments)
     return output
 end
 
---- Validate a LuaRocks package name before placing it in a rockspec.
---- @param package_name  any
---- @return boolean
---- @return string?
-local function validate_package_name(package_name)
-    if type(package_name) ~= "string" or package_name == "" then
-        return false, "Package name must be a non-empty string."
-    end
-
-    -- Rock names commonly contain letters, digits, hyphens, and underscores.
-    if not package_name:match("^[%w][%w_.%-]*$") then
-        return false, string.format("Invalid LuaRocks package name: %s", package_name)
-    end
-
-    return true
-end
-
---- Turn the configured Lua version into a LuaRocks dependency constraint.
---- A series value such as "5.4" means any patch release in the 5.4 series.
---- @param version  string
---- @return string?
-local function lua_version_constraint(version)
-    local major, minor = version:match("^(%d+)%.(%d+)")
-    if major and minor then
-        return string.format("lua >= %s.%s, < %s.%d", major, minor, major, tonumber(minor) + 1)
-    end
-
-    -- LuaJIT exposes Lua 5.1 compatibility to LuaRocks.
-    if version == "jit" or version == "luajit" then
-        return "lua >= 5.1, < 5.2"
-    end
-
-    return nil
-end
-
---- Validate a dense dependency array and return its rockspec lines.
---- @param dependencies  Artemis.Dependency[]
---- @return string[]?  lines
---- @return string?    error_message
-local function make_dependency_lines(dependencies)
-    if type(dependencies) ~= "table" or not TableUtils.is_dense_array(dependencies) then
-        return nil, "Dependencies must be a dense array of Artemis.Dependency values."
-    end
-
-    local sorted_dependencies = {}
-    local seen = {}
-    for index, dependency in ipairs(dependencies) do
-        if type(dependency) ~= "table" or not dependency.name then
-            return nil, string.format("Dependency at index %d must be an Artemis.Dependency instance.", index)
-        end
-
-        local valid, validation_error = validate_package_name(dependency.name)
-        if not valid then
-            return nil, validation_error
-        end
-
-        if type(dependency.constraint) ~= "string" or not dependency.constraint:match("%S") then
-            return nil, string.format("Dependency '%s' has an empty version constraint.", dependency.name)
-        end
-        if dependency.constraint:find("[\r\n]") then
-            return nil,
-                string.format("Dependency '%s' has a version constraint containing a line break.", dependency.name)
-        end
-        if seen[dependency.name] then
-            return nil, string.format("Dependency '%s' was supplied more than once.", dependency.name)
-        end
-
-        seen[dependency.name] = true
-        sorted_dependencies[#sorted_dependencies + 1] = dependency
-    end
-
-    table.sort(sorted_dependencies, function(left, right)
-        return left.name < right.name
-    end)
-
-    local lines = {}
-    for _, dependency in ipairs(sorted_dependencies) do
-        if dependency.constraint == "*" then
-            lines[#lines + 1] = dependency.name
-        else
-            lines[#lines + 1] = dependency.name .. " " .. dependency.constraint
-        end
-    end
-
-    return lines
-end
-
-
 --- Convert exact package versions to LuaRocks' native lockfile format.
 --- LuaRocks expects a Lua chunk returning { dependencies = { name = version } }.
 --- @param exact_versions  table<string, string>
@@ -376,7 +87,7 @@ local function serialize_luarocks_lock(exact_versions)
 
     local names = {}
     for package_name, version in pairs(exact_versions) do
-        local valid, validation_error = validate_package_name(package_name)
+        local valid, validation_error = RockspecGeneration.validate_package_name(package_name)
         if not valid then
             return nil, validation_error
         end
@@ -479,62 +190,6 @@ end
 
 ----------------------------------- Manager Functions -----------------------------------
 
-
---- Build a temporary rockspec from supplied dependency declarations.
---- @param dependencies  Artemis.Dependency[]
---- @return string?  rockspec_path Relative path from the working directory.
---- @return string?  error_message
-function DependencyManager:_write_dependency_rockspec(dependencies)
-    local dependency_lines, dependency_error = make_dependency_lines(dependencies)
-    if not dependency_lines then
-        return nil, dependency_error
-    end
-
-    local lua_constraint = lua_version_constraint(self.lua_version)
-    if lua_constraint then
-        table.insert(dependency_lines, 1, lua_constraint)
-    end
-
-    local lines = {
-        'rockspec_format = "3.0"',
-        string.format("package = %q", ROCKSPEC_PACKAGE),
-        string.format("version = %q", ROCKSPEC_VERSION),
-        "source = {",
-        -- LuaRocks requires source.url in a rockspec. `--only-deps` skips
-        -- fetching/building the project itself, so this reserved URL is never fetched.
-        '    url = "https://example.invalid/artemis-dependency-spec",',
-        "}",
-        "description = {",
-        '    summary = "Temporary dependency specification for Artemis",',
-        '    license = "GPL-3.0-only",',
-        "}",
-        "dependencies = {"
-    }
-
-    for _, dependency in ipairs(dependency_lines) do
-        lines[#lines + 1] = "    " .. string.format("%q", dependency) .. ","
-    end
-
-    lines[#lines + 1] = "}"
-    lines[#lines + 1] = "build = { type = \"none\" }"
-    lines[#lines + 1] = ""
-
-    local directory = Path.join(self.working_directory, self.metadata_dir)
-    local parent_created, parent_create_error = FileSystem.make_directory(directory)
-    if not parent_created then
-        return nil, string.format("Could not create metadata directory '%s': %s", directory, parent_create_error)
-    end
-
-    local relative_path = Path.join(self.metadata_dir, ROCKSPEC_FILENAME)
-    local absolute_path = Path.join(self.working_directory, relative_path)
-    local saved, save_error = FileSystem.write_file(absolute_path, table.concat(lines, "\n"))
-    if not saved then
-        return nil, string.format("Could not write generated rockspec '%s': %s", absolute_path, save_error)
-    end
-
-    return relative_path
-end
-
 --- Create a dependency manager for a working directory and LuaRocks tree.
 --- The manager does not load or retain project metadata or dependency sources.
 --- @param working_directory  string                            Working directory for commands and temporary files.
@@ -602,12 +257,12 @@ function DependencyManager.new(working_directory, options)
     end
 
 
-    local cache_dir, cache_error = resolve_cache_dir(absolute_working_directory, options.cache_dir)
+    local cache_dir, cache_error = LuaRocksConfig.resolve_cache_dir(absolute_working_directory, options.cache_dir)
     if not cache_dir then
         return nil, cache_error
     end
 
-    local luarocks_config, rocks_cache_dir, config_error = create_luarocks_cache_config(
+    local luarocks_config, rocks_cache_dir, config_error = LuaRocksConfig.create_luarocks_cache_config(
         absolute_working_directory,
         cache_dir,
         lua_version,
@@ -652,7 +307,8 @@ function DependencyManager:install(dependencies, exact_versions)
         return true
     end
 
-    local rockspec_path, rockspec_error = self:_write_dependency_rockspec(dependencies)
+    local rockspec_path, rockspec_error = RockspecGeneration.write_dependency_rockspec(self.working_directory,
+        self.metadata_dir, self.lua_version, dependencies)
     if not rockspec_path then
         return false, rockspec_error
     end
@@ -678,7 +334,7 @@ function DependencyManager:install(dependencies, exact_versions)
     end
 
     local function install_dependencies()
-        return execute_luarocks(self, {
+        return capture_luarocks(self, {
             "install",
             "--deps-mode=one",
             "--only-deps",
@@ -686,16 +342,16 @@ function DependencyManager:install(dependencies, exact_versions)
         })
     end
 
-    local success, install_error
+    local output, install_error
     if native_lock_contents then
-        success, install_error = with_luarocks_lockfile(self, native_lock_contents, install_dependencies)
+        output, install_error = with_luarocks_lockfile(self, native_lock_contents, install_dependencies)
     else
-        success, install_error = install_dependencies()
+        output, install_error = install_dependencies()
     end
 
     FileSystem.remove(Path.join(self.working_directory, rockspec_path))
 
-    if not success then
+    if not output then
         return false, install_error
     end
 
@@ -713,7 +369,7 @@ function DependencyManager:verify_versions(exact_versions)
     end
 
     for package_name, expected_version in pairs(exact_versions) do
-        local valid, validation_error = validate_package_name(package_name)
+        local valid, validation_error = RockspecGeneration.validate_package_name(package_name)
         if not valid then
             return false, validation_error
         end
@@ -762,7 +418,7 @@ end
 --- @return boolean  success
 --- @return string?  warning_or_error
 function DependencyManager:uninstall(package_name)
-    local valid, validation_error = validate_package_name(package_name)
+    local valid, validation_error = RockspecGeneration.validate_package_name(package_name)
     if not valid then
         return false, validation_error
     end
@@ -780,13 +436,13 @@ function DependencyManager:uninstall(package_name)
         return true
     end
 
-    local uninstalled, uninstall_error = execute_luarocks(self, {
+    local output, uninstall_error = capture_luarocks(self, {
         "remove",
         "--deps-mode=one",
         package_name
     })
 
-    if not uninstalled then
+    if not output then
         return true, string.format(
             "LuaRocks kept '%s' in the local tree. It may still be required by another installed rock. Details: %s",
             package_name,
@@ -825,7 +481,7 @@ end
 --- @return boolean?  installed
 --- @return string?   error_message
 function DependencyManager:is_installed(package_name)
-    local valid, validation_error = validate_package_name(package_name)
+    local valid, validation_error = RockspecGeneration.validate_package_name(package_name)
     if not valid then
         return nil, validation_error
     end

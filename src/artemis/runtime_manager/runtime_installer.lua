@@ -167,7 +167,7 @@ function RuntimeInstaller:_build_and_install(version, archive_path)
 
     local extracted, extract_error = Process.execute(
         Process.shell_quote(self.tar) .. " -xzf " .. Process.shell_quote(archive_path)
-            .. " -C " .. Process.shell_quote(build_directory)
+        .. " -C " .. Process.shell_quote(build_directory)
     )
     if not extracted then
         return false, string.format("Could not extract Lua %s: %s", version, extract_error)

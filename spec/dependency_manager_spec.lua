@@ -118,61 +118,6 @@ describe("artemis.dependency_manager", function()
         assert.matches("without direct dependencies", err)
     end)
 
-    it("rejects malformed dependency arrays and duplicate package names", function()
-        helpers.with_temp_dir(function(root)
-            local manager = assert(make_manager(root))
-
-            local path, err = manager:_write_dependency_rockspec({ [2] = dependency("argparse") })
-            assert.is_nil(path)
-            assert.matches("dense array", err)
-
-            local success
-            success, err = manager:install({ dependency("argparse"), dependency("argparse", ">= 0.7") })
-            assert.is_false(success)
-            assert.matches("supplied more than once", err)
-
-            success, err = manager:install({ dependency("bad;name") })
-            assert.is_false(success)
-            assert.matches("Invalid LuaRocks package name", err)
-        end)
-    end)
-
-    it("writes sorted, safely quoted constraints to a generated rockspec", function()
-        helpers.with_temp_dir(function(root)
-            local manager = assert(make_manager(root, "luarocks-test", {
-                metadata_dir = ".artemis/nested"
-            }))
-
-            local relative_path, err = manager:_write_dependency_rockspec({
-                dependency("zlib"),
-                dependency("argparse", ">= 0.7, < 1.0")
-            })
-            assert.is_truthy(relative_path, err)
-
-            local contents = helpers.read_file(root .. "/" .. relative_path)
-            local argparse_position = assert(contents:find('"argparse >= 0.7, < 1.0"', 1, true))
-            local zlib_position = assert(contents:find('"zlib"', 1, true))
-            assert.is_true(argparse_position < zlib_position)
-            assert.is_truthy(contents:find('"lua >= 5.4, < 5.5"', 1, true))
-        end)
-    end)
-
-    it("rejects empty and multiline constraints before writing a rockspec", function()
-        helpers.with_temp_dir(function(root)
-            local manager = assert(make_manager(root))
-
-            local path, err = manager:_write_dependency_rockspec({ dependency("argparse", " ") })
-            assert.is_nil(path)
-            assert.matches("empty version constraint", err)
-
-            path, err = manager:_write_dependency_rockspec({ dependency("argparse", "0.7\npackage = 'bad'") })
-            assert.is_nil(path)
-            assert.matches("line break", err)
-
-            assert.is_nil(io.open(root .. "/.artemis/artemis-dependencies-0.0.0-1.rockspec", "rb"))
-        end)
-    end)
-
     it("installs supplied dependencies through LuaRocks and removes the generated rockspec", function()
         helpers.with_temp_dir(function(root)
             local executable, files = make_fake_luarocks(root, 0)
@@ -284,7 +229,7 @@ describe("artemis.dependency_manager", function()
         local manager = setmetatable({
             list_installed = function()
                 return {
-                    { name = "argparse", version = "0.7.2-1" },
+                    { name = "argparse",  version = "0.7.2-1" },
                     { name = "luasystem", version = "0.3.0-1" }
                 }
             end
@@ -380,7 +325,7 @@ describe("artemis.dependency_manager", function()
             local rocks, err = manager:list_installed()
             assert.is_truthy(rocks, err)
             assert.same({
-                { name = "argparse", version = "0.7.2-1" },
+                { name = "argparse",  version = "0.7.2-1" },
                 { name = "luasystem", version = "0.7.1-1" }
             }, rocks)
             assert.is_true(manager:is_installed("argparse"))
