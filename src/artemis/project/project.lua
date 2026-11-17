@@ -8,8 +8,7 @@
 
 local Manifest = require("artemis.project.manifest")
 local RuntimeManager = require("artemis.runtime_manager")
-local DependencyManager = require("artemis.dependency_manager")
-local NativeDependencyManager = require("artemis.dependency_manager.native_dependency_manager")
+local LuaRocksDependencyManager = require("artemis.dependency_manager.luarocks")
 local RockspecGeneration = require("artemis.dependency_manager.rockspec_generation")
 local Lockfile = require("artemis.project.lockfile")
 local Path = require("artemis.utils.path")
@@ -229,10 +228,13 @@ function Project.new(project_root, options)
         return nil, "metadata_dir must be a non-empty relative path."
     end
 
-    local dependency_backend = options.dependency_backend or options.backend
-        or (options.luarocks ~= nil and "luarocks" or "native")
+    local dependency_backend = options.dependency_backend or "luarocks"
     if dependency_backend ~= "native" and dependency_backend ~= "luarocks" then
         return nil, "dependency_backend must be either 'native' or 'luarocks'."
+    end
+
+    if dependency_backend == "native" then
+        return nil, "native dependency manager not yet implemented."
     end
 
     local runtime_options = copy_options(options.runtime_options)
@@ -291,9 +293,10 @@ function Project:_create_dependency_manager(lua_dir, lua_runtime_version)
     dependency_options.lua_dir = lua_dir
 
     if self.dependency_backend == "luarocks" then
-        return DependencyManager.new(self.root, dependency_options)
+        return LuaRocksDependencyManager.new(self.root, dependency_options)
+    else
+        return nil, "Native dependency backend not yet implemented."
     end
-    return NativeDependencyManager.new(self.root, dependency_options)
 end
 
 --- Return the dependency manager, creating a configuration-only instance when needed.
@@ -483,14 +486,9 @@ function Project:build(output_path)
     if not synchronized then return false, sync_error end
 
     local rockspec_path, rockspec_data, generation_error = self:generate_rockspec(output_path)
-    if not rockspec_path then return false, generation_error end
+    if not rockspec_path or not rockspec_data then return false, generation_error end
 
-    local built, build_error
-    if self.dependency_backend == "luarocks" then
-        built, build_error = self.dependency_manager:build(rockspec_path)
-    else
-        built, build_error = self.dependency_manager:build_project(rockspec_data, rockspec_path)
-    end
+    local built, build_error = self.dependency_manager:build_project(rockspec_data, rockspec_path)
     if not built then return false, build_error end
     return true, nil, rockspec_path
 end

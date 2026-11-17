@@ -605,7 +605,7 @@ function CLI.build_parser()
   parser:option("--manifest", "Manifest path.", Manifest.DEFAULT_FILENAME)
   parser:option("--lockfile", "Lockfile path.", Lockfile.DEFAULT_FILENAME)
   parser:option("--cache-dir", "Shared Artemis cache directory.")
-  parser:option("--dependency-backend", "Dependency installer: native (default) or luarocks.", "luarocks")
+  parser:option("--dependency-backend", "Dependency installer: native (not implemented) or luarocks.", "luarocks")
   parser:option("--server", "LuaRocks-compatible package repository for the native backend.")
   parser:flag("-v --version", "Show Artemis version."):target("show_version")
 

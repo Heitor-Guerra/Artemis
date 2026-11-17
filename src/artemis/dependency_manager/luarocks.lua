@@ -7,15 +7,16 @@
 --- resolution, compilation, and installation.
 ---
 --- LuaRocks commands are invoked through the shared process utility.
---- @module 'artemis.dependency_manager'
+--- @module 'artemis.dependency_manager.luarocks'
 
 local Path = require("artemis.utils.path")
 local FileSystem = require("artemis.utils.filesystem")
 local Process = require("artemis.utils.process")
 local LuaRocksConfig = require("artemis.dependency_manager.luarocks_config")
 local RockspecGeneration = require("artemis.dependency_manager.rockspec_generation")
+local DependencyManager = require("artemis.dependency_manager.interface")
 
---- @class Artemis.DependencyManagerOptions
+--- @class Artemis.LuaRocksDependencyManagerOptions
 --- @field tree?             string  LuaRocks tree. Defaults to "lua_modules".
 --- @field luarocks?         string  LuaRocks executable. Defaults to "./luarocks" when present, otherwise "luarocks".
 --- @field lua_version       string  Lua version used by LuaRocks.
@@ -32,7 +33,7 @@ local RockspecGeneration = require("artemis.dependency_manager.rockspec_generati
 --- @field name     string  Installed rock name.
 --- @field version  string  Installed rock version, including LuaRocks revision.
 
---- @class Artemis.DependencyManager
+--- @class Artemis.LuaRocksDependencyManager : Artemis.DependencyManager
 --- @field working_directory  string            Working directory for LuaRocks commands and generated files.
 --- @field tree               string            Configured LuaRocks tree.
 --- @field luarocks           string            LuaRocks executable.
@@ -42,8 +43,7 @@ local RockspecGeneration = require("artemis.dependency_manager.rockspec_generati
 --- @field cache_dir          string            Shared download cache directory.
 --- @field rocks_cache_dir    string            LuaRocks download cache directory.
 --- @field luarocks_config    string            Generated LuaRocks config for the shared cache.
-local DependencyManager = {}
-DependencyManager.__index = DependencyManager
+local LuaRocksDependencyManager = DependencyManager.extend()
 
 ------------------------------------ Local Functions ------------------------------------
 
@@ -193,10 +193,10 @@ end
 --- Create a dependency manager for a working directory and LuaRocks tree.
 --- The manager does not load or retain project metadata or dependency sources.
 --- @param working_directory  string                            Working directory for commands and temporary files.
---- @param options?           Artemis.DependencyManagerOptions  Optional configuration.
+--- @param options?           Artemis.LuaRocksDependencyManagerOptions  Optional configuration.
 --- @return Artemis.DependencyManager?  manager
 --- @return string?                     error_message
-function DependencyManager.new(working_directory, options)
+function LuaRocksDependencyManager.new(working_directory, options)
     if type(working_directory) ~= "string" or not working_directory:match("%S") then
         return nil, "Working directory must be a non-empty string."
     end
@@ -273,7 +273,8 @@ function DependencyManager.new(working_directory, options)
         return nil, config_error
     end
 
-    local self = setmetatable({}, DependencyManager)
+    --- @class Artemis.DependencyManager
+    local self = setmetatable({}, LuaRocksDependencyManager)
     self.working_directory = absolute_working_directory
     self.tree = tree
     self.luarocks = luarocks
@@ -294,7 +295,7 @@ end
 --- @param exact_versions? table<string, string>    Exact versions for direct and transitive rocks.
 --- @return boolean  success
 --- @return string?  error_message
-function DependencyManager:install(dependencies, exact_versions)
+function LuaRocksDependencyManager:install(dependencies, exact_versions)
     if #dependencies == 0 then
         if exact_versions ~= nil then
             if type(exact_versions) ~= "table" then
@@ -360,10 +361,14 @@ end
 
 --- Build and install the current project from a generated or existing rockspec.
 --- This is the LuaRocks compatibility implementation of `artemis build`.
+--- @param rockspec table|string
 --- @param rockspec_path string
 --- @return boolean success
 --- @return string? error_message
-function DependencyManager:build(rockspec_path)
+function LuaRocksDependencyManager:build_project(rockspec, rockspec_path)
+    if not rockspec_path and type(rockspec) == "string" then
+        rockspec_path = rockspec
+    end
     if type(rockspec_path) ~= "string" or not rockspec_path:match("%S") then
         return false, "A rockspec path is required to build the project."
     end
@@ -377,7 +382,7 @@ end
 --- @param exact_versions  table<string, string>
 --- @return boolean  valid
 --- @return string?  error_message
-function DependencyManager:verify_versions(exact_versions)
+function LuaRocksDependencyManager:verify_versions(exact_versions)
     if type(exact_versions) ~= "table" then
         return false, "Exact versions must be a table."
     end
@@ -431,7 +436,7 @@ end
 --- @param package_name  string  LuaRocks package name.
 --- @return boolean  success
 --- @return string?  warning_or_error
-function DependencyManager:uninstall(package_name)
+function LuaRocksDependencyManager:uninstall(package_name)
     local valid, validation_error = RockspecGeneration.validate_package_name(package_name)
     if not valid then
         return false, validation_error
@@ -470,7 +475,7 @@ end
 --- List rocks currently installed in the configured LuaRocks tree.
 --- @return Artemis.InstalledRock[]?  rocks
 --- @return string?                   error_message
-function DependencyManager:list_installed()
+function LuaRocksDependencyManager:list_installed()
     local output, command_error = capture_luarocks(self, { "list", "--porcelain" })
     if not output then
         return nil, command_error
@@ -494,7 +499,7 @@ end
 --- @param package_name  string
 --- @return boolean?  installed
 --- @return string?   error_message
-function DependencyManager:is_installed(package_name)
+function LuaRocksDependencyManager:is_installed(package_name)
     local valid, validation_error = RockspecGeneration.validate_package_name(package_name)
     if not valid then
         return nil, validation_error
@@ -516,7 +521,7 @@ end
 
 --- Return the configured local LuaRocks tree path.
 --- @return string
-function DependencyManager:get_tree()
+function LuaRocksDependencyManager:get_tree()
     return self.tree
 end
 
@@ -524,11 +529,11 @@ end
 --- The output contains shell exports such as LUA_PATH and LUA_CPATH.
 --- @return string?  output
 --- @return string?  error_message
-function DependencyManager:path()
+function LuaRocksDependencyManager:path()
     return capture_luarocks(self, { "path" })
 end
 
 -----------------------------------------------------------------------------------------
 
 
-return DependencyManager
+return LuaRocksDependencyManager

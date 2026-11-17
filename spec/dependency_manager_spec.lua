@@ -1,5 +1,5 @@
 --- @diagnostic disable: undefined-global, undefined-field, missing-fields, assign-type-mismatch, param-type-mismatch, need-check-nil
-local DependencyManager = require("artemis.dependency_manager")
+local LuaRocksDependencyManager = require("artemis.dependency_manager.luarocks")
 local helpers = require("spec.helpers")
 
 describe("artemis.dependency_manager", function()
@@ -15,7 +15,7 @@ describe("artemis.dependency_manager", function()
         options.lua_version = options.lua_version or "5.4.9"
         options.cache_dir = options.cache_dir or (root .. "/shared-cache")
         options.luarocks = luarocks or options.luarocks or "luarocks-test"
-        return DependencyManager.new(root, options)
+        return LuaRocksDependencyManager.new(root, options)
     end
 
     local function make_fake_luarocks(root, exit_code)
@@ -51,16 +51,16 @@ describe("artemis.dependency_manager", function()
     end
 
     it("rejects invalid constructor arguments and requires only generic configuration", function()
-        local manager, err = DependencyManager.new("", {})
+        local manager, err = LuaRocksDependencyManager.new("", {})
         assert.is_nil(manager)
         assert.matches("Working directory", err)
 
         helpers.with_temp_dir(function(root)
-            manager, err = DependencyManager.new(root, {})
+            manager, err = LuaRocksDependencyManager.new(root, {})
             assert.is_nil(manager)
             assert.matches("Lua version", err)
 
-            manager, err = DependencyManager.new(root, {
+            manager, err = LuaRocksDependencyManager.new(root, {
                 lua_version = "5.4",
                 tree = " "
             })
@@ -112,7 +112,7 @@ describe("artemis.dependency_manager", function()
     end)
 
     it("rejects exact versions when no direct dependencies were supplied", function()
-        local manager = setmetatable({}, DependencyManager)
+        local manager = setmetatable({}, LuaRocksDependencyManager)
         local success, err = manager:install({}, { argparse = "0.7.2-1" })
         assert.is_false(success)
         assert.matches("without direct dependencies", err)
@@ -233,7 +233,7 @@ describe("artemis.dependency_manager", function()
                     { name = "luasystem", version = "0.3.0-1" }
                 }
             end
-        }, DependencyManager)
+        }, LuaRocksDependencyManager)
 
         local valid, err = manager:verify_versions({
             argparse = "0.7.2-1",
@@ -251,7 +251,7 @@ describe("artemis.dependency_manager", function()
             list_installed = function()
                 error("list_installed should not be called")
             end
-        }, DependencyManager)
+        }, LuaRocksDependencyManager)
 
         local valid, err = manager:verify_versions("not-a-table")
         assert.is_false(valid)
@@ -263,7 +263,7 @@ describe("artemis.dependency_manager", function()
             list_installed = function()
                 return nil, "simulated local tree listing error"
             end
-        }, DependencyManager)
+        }, LuaRocksDependencyManager)
 
         local valid, err = manager:verify_versions({ argparse = "0.7.2-1" })
         assert.is_false(valid)
@@ -284,7 +284,7 @@ describe("artemis.dependency_manager", function()
 
     it("uses the XDG or home cache by default", function()
         helpers.with_temp_dir(function(root)
-            local manager, err = DependencyManager.new(root, {
+            local manager, err = LuaRocksDependencyManager.new(root, {
                 lua_version = "5.4",
                 luarocks = "luarocks-test"
             })
@@ -338,7 +338,7 @@ describe("artemis.dependency_manager", function()
             list_installed = function()
                 error("list_installed must not run for an invalid package name")
             end
-        }, DependencyManager)
+        }, LuaRocksDependencyManager)
 
         local installed, err = manager:is_installed("argparse; touch /tmp/pwned")
         assert.is_nil(installed)
